@@ -23,21 +23,34 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
                 adm_cond = cond[1]['adm_encoded']
 
             input_x = x_in[:,:,area[2]:area[0] + area[2],area[3]:area[1] + area[3]]
-            mult = torch.ones_like(input_x) * strength
+            if 'mask' in cond[1]:
+                # Scale the mask to the size of the input
+                mask = cond[1]['mask'].to(device=input_x.device)
+                if len(mask.shape) == 2:
+                    mask = mask.unsqueeze(0)
+                mask = torch.nn.functional.interpolate(mask.unsqueeze(1), size=(x_in.shape[2], x_in.shape[3]), mode='bilinear', align_corners=False).squeeze(1)
+                mask = mask[:,area[2]:area[0] + area[2],area[3]:area[1] + area[3]]
+                if mask.shape[0] != input_x.shape[0]:
+                    mask = mask.repeat(input_x.shape[0], 1, 1)
+            else:
+                mask = torch.ones_like(input_x)
+            mult = mask * strength
 
-            rr = 8
-            if area[2] != 0:
-                for t in range(rr):
-                    mult[:,:,t:1+t,:] *= ((1.0/rr) * (t + 1))
-            if (area[0] + area[2]) < x_in.shape[2]:
-                for t in range(rr):
-                    mult[:,:,area[0] - 1 - t:area[0] - t,:] *= ((1.0/rr) * (t + 1))
-            if area[3] != 0:
-                for t in range(rr):
-                    mult[:,:,:,t:1+t] *= ((1.0/rr) * (t + 1))
-            if (area[1] + area[3]) < x_in.shape[3]:
-                for t in range(rr):
-                    mult[:,:,:,area[1] - 1 - t:area[1] - t] *= ((1.0/rr) * (t + 1))
+            if 'mask' not in cond[1]:
+                rr = 8
+                if area[2] != 0:
+                    for t in range(rr):
+                        mult[:,:,t:1+t,:] *= ((1.0/rr) * (t + 1))
+                if (area[0] + area[2]) < x_in.shape[2]:
+                    for t in range(rr):
+                        mult[:,:,area[0] - 1 - t:area[0] - t,:] *= ((1.0/rr) * (t + 1))
+                if area[3] != 0:
+                    for t in range(rr):
+                        mult[:,:,:,t:1+t] *= ((1.0/rr) * (t + 1))
+                if (area[1] + area[3]) < x_in.shape[3]:
+                    for t in range(rr):
+                        mult[:,:,:,area[1] - 1 - t:area[1] - t] *= ((1.0/rr) * (t + 1))
+
             conditionning = {}
             conditionning['c_crossattn'] = cond[0]
             if cond_concat_in is not None and len(cond_concat_in) > 0:

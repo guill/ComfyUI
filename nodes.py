@@ -98,6 +98,8 @@ class ConditioningSetMask:
 
     def append(self, conditioning, mask, strength, min_sigma=0.0, max_sigma=99.0):
         c = []
+        if len(mask.shape) < 3:
+            mask = mask.unsqueeze(0)
         for t in conditioning:
             n = [t[0], t[1].copy()]
             _, h, w = mask.shape

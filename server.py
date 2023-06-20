@@ -505,12 +505,10 @@ class PromptServer():
                         for i, item in enumerate(v):
                             result = merge_dict_recursive(result, copy.deepcopy(item))
                     out_string = json.dumps(result)
+                    return web.json_response(result, status=resp_code)
                 else:
-                    resp_code = 400
-                    out_string = valid[1]
-                    print("invalid prompt:", valid[1])
+                    return web.json_response({"error": "no prompt", "node_errors": []}, status=400)
 
-            return web.Response(body=out_string, status=resp_code)
         
         @routes.post("/queue")
         async def post_queue(request):

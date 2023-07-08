@@ -500,9 +500,9 @@ class PromptServer():
                     future = asyncio.get_running_loop().create_future()
                     outputs_to_execute = valid[2]
                     self.prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute, future))
-                    output_api = await future
+                    sync_result = await future
                     result = {}
-                    for _, (node_id, v) in enumerate(output_api.items()):
+                    for _, (node_id, v) in enumerate(sync_result.items()):
                         for i, item in enumerate(v):
                             result = merge_dict_recursive(result, copy.deepcopy(item))
                     out_string = json.dumps(result)
@@ -609,6 +609,8 @@ class PromptServer():
 
         if address == '':
             address = '0.0.0.0'
+        self.address = address
+        self.port = port
         if verbose:
             print("Starting server\n")
             print("To see the GUI go to: http://{}:{}".format(address, port))

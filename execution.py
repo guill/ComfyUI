@@ -72,7 +72,7 @@ def get_output_data(obj, input_data_all):
     
     results = []
     uis = []
-    apis = []
+    sync_results = []
     return_values = map_node_over_list(obj, input_data_all, obj.FUNCTION, allow_interrupt=True)
 
     for r in return_values:
@@ -81,8 +81,8 @@ def get_output_data(obj, input_data_all):
                 uis.append(r['ui'])
             if 'result' in r:
                 results.append(r['result'])
-            if 'api' in r:
-                apis.append(r['api'])
+            if 'sync_result' in r:
+                sync_results.append(r['sync_result'])
         else:
             results.append(r)
     
@@ -103,7 +103,7 @@ def get_output_data(obj, input_data_all):
     ui = dict()    
     if len(uis) > 0:
         ui = {k: [y for x in uis for y in x[k]] for k in uis[0].keys()}
-    return output, ui, apis
+    return output, ui, sync_results
 
 def format_value(x):
     if x is None:
@@ -113,7 +113,7 @@ def format_value(x):
     else:
         return str(x)
 
-def recursive_execute(server, prompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, outputs_api, object_storage):
+def recursive_execute(server, prompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, outputs_sync, object_storage):
     unique_id = current_item
     inputs = prompt[unique_id]['inputs']
     class_type = prompt[unique_id]['class_type']
@@ -128,7 +128,7 @@ def recursive_execute(server, prompt, outputs, current_item, extra_data, execute
             input_unique_id = input_data[0]
             output_index = input_data[1]
             if input_unique_id not in outputs:
-                result = recursive_execute(server, prompt, outputs, input_unique_id, extra_data, executed, prompt_id, outputs_ui, outputs_api, object_storage)
+                result = recursive_execute(server, prompt, outputs, input_unique_id, extra_data, executed, prompt_id, outputs_ui, outputs_sync, object_storage)
                 if result[0] is not True:
                     # Another node failed further upstream
                     return result
@@ -145,14 +145,14 @@ def recursive_execute(server, prompt, outputs, current_item, extra_data, execute
             obj = class_def()
             object_storage[(unique_id, class_type)] = obj
 
-        output_data, output_ui, output_api = get_output_data(obj, input_data_all)
+        output_data, output_ui, output_sync = get_output_data(obj, input_data_all)
         outputs[unique_id] = output_data
         if len(output_ui) > 0:
             outputs_ui[unique_id] = output_ui
             if server.client_id is not None:
                 server.send_sync("executed", { "node": unique_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
-        if len(output_api) > 0:
-            outputs_api[unique_id] = output_api
+        if len(output_sync) > 0:
+            outputs_sync[unique_id] = output_sync
     except comfy.model_management.InterruptProcessingException as iex:
         print("Processing interrupted")
 
@@ -267,7 +267,7 @@ class PromptExecutor:
         self.outputs = {}
         self.object_storage = {}
         self.outputs_ui = {}
-        self.outputs_api = {}
+        self.outputs_sync = {}
         self.old_prompt = {}
         self.server = server
 
@@ -353,9 +353,9 @@ class PromptExecutor:
                 if x not in current_outputs:
                     d = self.outputs_ui.pop(x)
                     del d
-            for x in list(self.outputs_api.keys()):
+            for x in list(self.outputs_sync.keys()):
                 if x not in current_outputs:
-                    d = self.outputs_api.pop(x)
+                    d = self.outputs_sync.pop(x)
                     del d
 
             if self.server.client_id is not None:
@@ -375,7 +375,7 @@ class PromptExecutor:
                 # This call shouldn't raise anything if there's an error deep in
                 # the actual SD code, instead it will report the node where the
                 # error was raised
-                success, error, ex = recursive_execute(self.server, prompt, self.outputs, output_node_id, extra_data, executed, prompt_id, self.outputs_ui, self.outputs_api, self.object_storage)
+                success, error, ex = recursive_execute(self.server, prompt, self.outputs, output_node_id, extra_data, executed, prompt_id, self.outputs_ui, self.outputs_sync, self.object_storage)
                 if success is not True:
                     self.handle_execution_error(prompt_id, prompt, current_outputs, executed, error, ex)
                     break
@@ -716,7 +716,7 @@ class PromptQueue:
             self.server.queue_updated()
             return (item, i)
 
-    def task_done(self, item_id, outputs_ui, outputs_api):
+    def task_done(self, item_id, outputs_ui, outputs_sync):
         with self.mutex:
             prompt = self.currently_running.pop(item_id)
             self.history[prompt[1]] = { "prompt": prompt, "outputs": {} }
@@ -724,7 +724,7 @@ class PromptQueue:
                 self.history[prompt[1]]["outputs"][o] = outputs_ui[o]
             self.server.queue_updated()
             if item_id in self.futures:
-                self.futures[item_id].set_result(outputs_api)
+                self.futures[item_id].set_result(outputs_sync)
                 del self.futures[item_id]
 
     def get_current_queue(self):

@@ -7,11 +7,133 @@ import heapq
 import traceback
 import gc
 import time
+from enum import Enum
 
 import torch
 import nodes
 
 import comfy.model_management
+
+class ExecutionResult(Enum):
+    SUCCESS = 0
+    FAILURE = 1
+    SLEEPING = 2
+    REPLACEMENT = 3
+
+class ExecutionList:
+    def __init__(self, prompt, outputs):
+        self.prompt = prompt
+        self.outputs = outputs
+        self.staged_node_id = None
+        self.pendingNodes = {}
+        self.blockCount = {} # Number of nodes this node is directly blocked by
+        self.blocking = {} # Which nodes are blocked by this node
+        self.replacements = {} # Replacements used for node substitution
+
+    def get_input_info(self, unique_id, input_name):
+        class_type = self.prompt[unique_id]["class_type"]
+        class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
+        valid_inputs = class_def.INPUT_TYPES()
+        input_info = None
+        input_category = None
+        if input_name in valid_inputs["required"]:
+            input_category = "required"
+            input_info = valid_inputs["required"][input_name]
+        elif input_name in valid_inputs["optional"]:
+            input_category = "optional"
+            input_info = valid_inputs["optional"][input_name]
+        elif input_name in valid_inputs["hidden"]:
+            input_category = "hidden"
+            input_info = valid_inputs["hidden"][input_name]
+        if input_info is None:
+            return None, None, None
+        input_type = input_info[0]
+        extra_info = None
+        if len(input_info) > 1:
+            extra_info = input_info[1]
+        return input_type, input_category, extra_info
+
+    def add_strong_input_link(self, to_node_id, to_input):
+        inputs = self.prompt[to_node_id]["inputs"]
+        if to_input not in inputs:
+            raise Exception("Node %s says it needs input %s, but there is no input to that node at all" % (to_node_id, to_input))
+        value = inputs[to_input]
+        if not isinstance(value, list):
+            raise Exception("Node %s says it needs input %s, but that value is a constant" % (to_node_id, to_input))
+        from_node_id, from_socket = value
+        self.add_strong_link(from_node_id, from_socket, to_node_id, to_input)
+
+    def add_strong_link(self, from_node_id, from_socket, to_node_id, to_input):
+        while (from_node_id, from_socket) in self.replacements:
+            from_node_id, from_socket = self.replacements[(from_node_id, from_socket)]
+        print("Adding strong link from %s:%s to %s:%s" % (from_node_id, from_socket, to_node_id, to_input))
+        if from_node_id in self.outputs:
+            # Nothing to do
+            return
+        self.add_node(from_node_id)
+        if to_node_id not in self.blocking[from_node_id]:
+            self.blocking[from_node_id][to_node_id] = {}
+            self.blockCount[to_node_id] += 1
+        self.blocking[from_node_id][to_node_id][from_socket] = True
+
+    def add_node(self, unique_id):
+        if unique_id in self.pendingNodes:
+            return
+        print("Adding node %s" % unique_id)
+        self.pendingNodes[unique_id] = True
+        self.blockCount[unique_id] = 0
+        self.blocking[unique_id] = {}
+
+        inputs = self.prompt[unique_id]["inputs"]
+        for input_name in inputs:
+            value = inputs[input_name]
+            if isinstance(value, list):
+                from_node_id, from_socket = value
+                while (from_node_id, from_socket) in self.replacements:
+                    from_node_id, from_socket = self.replacements[(from_node_id, from_socket)]
+                input_type, input_category, input_info = self.get_input_info(unique_id, input_name)
+                if input_info is None or "lazy" not in input_info or not input_info["lazy"]:
+                    self.add_strong_link(from_node_id, from_socket, unique_id, input_name)
+
+    def stage_node_execution(self):
+        assert self.staged_node_id is None
+        if self.is_empty():
+            return None
+        available = [node_id for node_id in self.pendingNodes if self.blockCount[node_id] == 0]
+        if len(available) == 0:
+            raise Exception("Dependency cycle detected")
+        self.staged_node_id = available[0]
+        return self.staged_node_id
+
+    def unstage_node_execution(self):
+        assert self.staged_node_id is not None
+        self.staged_node_id = None
+
+    def replace_executing_node(self, outputs):
+        assert self.staged_node_id is not None
+        print(self.staged_node_id, outputs)
+        for i in range(len(outputs)):
+            output = outputs[i]
+            for node_id, node_info in self.prompt.items():
+                for input_name, input_info in node_info.get("inputs", {}).items():
+                    if input_info == [self.staged_node_id, i]:
+                        print("Replacing %s:%s with %s" % (node_id, input_name, "link" if isinstance(output, list) else "object"))
+                        self.prompt[node_id]["inputs"][input_name] = output
+                        if isinstance(output, list) and self.blocking[self.staged_node_id][node_id][i]:
+                            self.add_strong_link(output[0], output[1], node_id, input_name)
+        # self.complete_node_execution()
+
+    def complete_node_execution(self):
+        node_id = self.staged_node_id
+        del self.pendingNodes[node_id]
+        for blocked_node_id in self.blocking[node_id]:
+            self.blockCount[blocked_node_id] -= 1
+        del self.blocking[node_id]
+        self.staged_node_id = None
+
+    def is_empty(self):
+        return len(self.pendingNodes) == 0
+
 
 def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
@@ -22,11 +144,14 @@ def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_da
             input_unique_id = input_data[0]
             output_index = input_data[1]
             if input_unique_id not in outputs:
-                return None
+                print("Skipping non-existent input for %s from %s:%s" % (x, input_unique_id, output_index))
+                continue # This might be a lazily-evaluated input
             obj = outputs[input_unique_id][output_index]
             input_data_all[x] = obj
+            print("Adding link input for %s from %s:%s" % (x, input_unique_id, output_index))
         else:
             if ("required" in valid_inputs and x in valid_inputs["required"]) or ("optional" in valid_inputs and x in valid_inputs["optional"]) or ("hidden" in valid_inputs and x in valid_inputs["hidden"]):
+                print("Adding raw input for %s of type %s (%s)" % (x, type(input_data).__name__, input_data))
                 input_data_all[x] = [input_data]
 
     if "hidden" in valid_inputs:
@@ -73,13 +198,27 @@ def get_output_data(obj, input_data_all):
     results = []
     uis = []
     sync_results = []
+    graph_replacements = []
+    print("Getting output for %s" % obj.__class__.__name__)
+    print("Have input data: ", len(input_data_all))
+    for k in input_data_all.keys():
+        print("  %s: %s" % (k, type(input_data_all[k])))
     return_values = map_node_over_list(obj, input_data_all, obj.FUNCTION, allow_interrupt=True)
+    print(obj.__class__.__name__)
+    print("Return values: ", len(return_values))
+    for i in range(len(return_values)):
+        print(" index %d (%s): %d" % (i, "list" if isinstance(return_values[i], list) else "tuple", len(return_values[i])))
 
-    for r in return_values:
+    for i in range(len(return_values)):
+        r = return_values[i]
         if isinstance(r, dict):
             if 'ui' in r:
                 uis.append(r['ui'])
-            if 'result' in r:
+            if 'expand' in r:
+                # Perform an expansion, but do not append results
+                new_graph = r['expand']
+                graph_replacements.append((new_graph, r.get("result", None)))
+            elif 'result' in r:
                 results.append(r['result'])
             if 'sync_result' in r:
                 sync_results.append(r['sync_result'])
@@ -87,7 +226,10 @@ def get_output_data(obj, input_data_all):
             results.append(r)
     
     output = []
-    if len(results) > 0:
+    if len(graph_replacements) == 1:
+        # TODO - Support multiple graph replacements
+        pass
+    elif len(results) > 0:
         # check which outputs need concatenating
         output_is_list = [False] * len(results[0])
         if hasattr(obj, "OUTPUT_IS_LIST"):
@@ -103,7 +245,7 @@ def get_output_data(obj, input_data_all):
     ui = dict()    
     if len(uis) > 0:
         ui = {k: [y for x in uis for y in x[k]] for k in uis[0].keys()}
-    return output, ui, sync_results
+    return output, ui, sync_results, graph_replacements
 
 def format_value(x):
     if x is None:
@@ -113,25 +255,13 @@ def format_value(x):
     else:
         return str(x)
 
-def recursive_execute(server, prompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, outputs_sync, object_storage):
+def non_recursive_execute(server, prompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, outputs_sync, object_storage, execution_list):
     unique_id = current_item
     inputs = prompt[unique_id]['inputs']
     class_type = prompt[unique_id]['class_type']
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
     if unique_id in outputs:
-        return (True, None, None)
-
-    for x in inputs:
-        input_data = inputs[x]
-
-        if isinstance(input_data, list):
-            input_unique_id = input_data[0]
-            output_index = input_data[1]
-            if input_unique_id not in outputs:
-                result = recursive_execute(server, prompt, outputs, input_unique_id, extra_data, executed, prompt_id, outputs_ui, outputs_sync, object_storage)
-                if result[0] is not True:
-                    # Another node failed further upstream
-                    return result
+        return (ExecutionResult.SUCCESS, None, None)
 
     input_data_all = None
     try:
@@ -145,14 +275,49 @@ def recursive_execute(server, prompt, outputs, current_item, extra_data, execute
             obj = class_def()
             object_storage[(unique_id, class_type)] = obj
 
-        output_data, output_ui, output_sync = get_output_data(obj, input_data_all)
-        outputs[unique_id] = output_data
+        if hasattr(obj, "check_lazy_status"):
+            required_inputs = map_node_over_list(obj, input_data_all, "check_lazy_status", allow_interrupt=True)
+            required_inputs = set(sum([r for r in required_inputs if isinstance(r,list)], []))
+            required_inputs = [x for x in required_inputs if x not in input_data_all]
+            if len(required_inputs) > 0:
+                for i in required_inputs:
+                    execution_list.add_strong_input_link(unique_id, i)
+                print("Sleeping waiting for inputs inputs: ", required_inputs)
+                return (ExecutionResult.SLEEPING, None, None)
+
+        output_data, output_ui, output_sync, graph_replacements = get_output_data(obj, input_data_all)
         if len(output_ui) > 0:
             outputs_ui[unique_id] = output_ui
             if server.client_id is not None:
                 server.send_sync("executed", { "node": unique_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
         if len(output_sync) > 0:
             outputs_sync[unique_id] = output_sync
+        if len(graph_replacements) > 0:
+            for i in range(len(graph_replacements)):
+                new_graph, node_outputs = graph_replacements[i]
+                def map_id(subgraph_id):
+                    return "%s.%d.%s" % (unique_id, i, subgraph_id)
+                for node_id, node_info in new_graph.items():
+                    # Make sure the added nodes have unique IDs
+                    node_id = map_id(node_id)
+                    new_node = { "class_type": node_info["class_type"], "inputs": {} }
+                    for input_name, input_value in node_info.get("inputs", {}).items():
+                        if isinstance(input_value, list):
+                            new_node["inputs"][input_name] = [map_id(input_value[0]), input_value[1]]
+                        else:
+                            new_node["inputs"][input_name] = input_value
+                    prompt[node_id] = new_node
+                new_outputs = []
+                for n in range(len(node_outputs)):
+                    output = node_outputs[n]
+                    if isinstance(output, list): # This is a node link
+                        new_id = map_id(output[0])
+                        new_outputs.append([new_id, output[1]])
+                    else:
+                        new_outputs.append(output)
+                execution_list.replace_executing_node(tuple(new_outputs))
+            return (ExecutionResult.REPLACEMENT, None, None)
+        outputs[unique_id] = output_data
     except comfy.model_management.InterruptProcessingException as iex:
         print("Processing interrupted")
 
@@ -161,7 +326,7 @@ def recursive_execute(server, prompt, outputs, current_item, extra_data, execute
             "node_id": unique_id,
         }
 
-        return (False, error_details, iex)
+        return (ExecutionResult.FAILURE, error_details, iex)
     except Exception as ex:
         typ, _, tb = sys.exc_info()
         exception_type = full_type_name(typ)
@@ -186,11 +351,11 @@ def recursive_execute(server, prompt, outputs, current_item, extra_data, execute
             "current_inputs": input_data_formatted,
             "current_outputs": output_data_formatted
         }
-        return (False, error_details, ex)
+        return (ExecutionResult.FAILURE, error_details, ex)
 
     executed.add(unique_id)
 
-    return (True, None, None)
+    return (ExecutionResult.SUCCESS, None, None)
 
 def recursive_will_execute(prompt, outputs, current_item):
     unique_id = current_item
@@ -361,24 +526,20 @@ class PromptExecutor:
             if self.server.client_id is not None:
                 self.server.send_sync("execution_cached", { "nodes": list(current_outputs) , "prompt_id": prompt_id}, self.server.client_id)
             executed = set()
-            output_node_id = None
-            to_execute = []
-
+            execution_list = ExecutionList(prompt, self.outputs)
             for node_id in list(execute_outputs):
-                to_execute += [(0, node_id)]
+                execution_list.add_node(node_id)
 
-            while len(to_execute) > 0:
-                #always execute the output that depends on the least amount of unexecuted nodes first
-                to_execute = sorted(list(map(lambda a: (len(recursive_will_execute(prompt, self.outputs, a[-1])), a[-1]), to_execute)))
-                output_node_id = to_execute.pop(0)[-1]
-
-                # This call shouldn't raise anything if there's an error deep in
-                # the actual SD code, instead it will report the node where the
-                # error was raised
-                success, error, ex = recursive_execute(self.server, prompt, self.outputs, output_node_id, extra_data, executed, prompt_id, self.outputs_ui, self.outputs_sync, self.object_storage)
-                if success is not True:
+            while not execution_list.is_empty():
+                node_id = execution_list.stage_node_execution()
+                result, error, ex = non_recursive_execute(self.server, prompt, self.outputs, node_id, extra_data, executed, prompt_id, self.outputs_ui, self.outputs_sync, self.object_storage, execution_list)
+                if result == ExecutionResult.FAILURE:
                     self.handle_execution_error(prompt_id, prompt, current_outputs, executed, error, ex)
                     break
+                elif result == ExecutionResult.SLEEPING:
+                    execution_list.unstage_node_execution()
+                else: # result == ExecutionResult.SUCCESS or result == ExecutionResult.REPLACEMENT
+                    execution_list.complete_node_execution()
 
             for x in executed:
                 self.old_prompt[x] = copy.deepcopy(prompt[x])

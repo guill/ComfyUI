@@ -14,24 +14,36 @@ import nodes
 
 import comfy.model_management
 
+def debugtype(obj):
+    result = obj.__class__.__name__
+    if isinstance(obj, list):
+        result += "["
+        for i in range(len(obj)):
+            result += (debugtype(obj[i]) + ",")
+        result += "]"
+    if isinstance(obj, tuple):
+        result += "("
+        for i in range(len(obj)):
+            result += (debugtype(obj[i]) + ",")
+        result += ")"
+    return result
+
 class ExecutionResult(Enum):
     SUCCESS = 0
     FAILURE = 1
     SLEEPING = 2
-    REPLACEMENT = 3
 
 class ExecutionList:
-    def __init__(self, prompt, outputs):
-        self.prompt = prompt
+    def __init__(self, dynprompt, outputs):
+        self.dynprompt = dynprompt
         self.outputs = outputs
         self.staged_node_id = None
         self.pendingNodes = {}
         self.blockCount = {} # Number of nodes this node is directly blocked by
         self.blocking = {} # Which nodes are blocked by this node
-        self.replacements = {} # Replacements used for node substitution
 
     def get_input_info(self, unique_id, input_name):
-        class_type = self.prompt[unique_id]["class_type"]
+        class_type = self.dynprompt.get_node(unique_id)["class_type"]
         class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
         valid_inputs = class_def.INPUT_TYPES()
         input_info = None
@@ -53,8 +65,8 @@ class ExecutionList:
             extra_info = input_info[1]
         return input_type, input_category, extra_info
 
-    def add_strong_input_link(self, to_node_id, to_input):
-        inputs = self.prompt[to_node_id]["inputs"]
+    def make_input_strong_link(self, to_node_id, to_input):
+        inputs = self.dynprompt.get_node(to_node_id)["inputs"]
         if to_input not in inputs:
             raise Exception("Node %s says it needs input %s, but there is no input to that node at all" % (to_node_id, to_input))
         value = inputs[to_input]
@@ -64,8 +76,6 @@ class ExecutionList:
         self.add_strong_link(from_node_id, from_socket, to_node_id, to_input)
 
     def add_strong_link(self, from_node_id, from_socket, to_node_id, to_input):
-        while (from_node_id, from_socket) in self.replacements:
-            from_node_id, from_socket = self.replacements[(from_node_id, from_socket)]
         print("Adding strong link from %s:%s to %s:%s" % (from_node_id, from_socket, to_node_id, to_input))
         if from_node_id in self.outputs:
             # Nothing to do
@@ -84,13 +94,11 @@ class ExecutionList:
         self.blockCount[unique_id] = 0
         self.blocking[unique_id] = {}
 
-        inputs = self.prompt[unique_id]["inputs"]
+        inputs = self.dynprompt.get_node(unique_id)["inputs"]
         for input_name in inputs:
             value = inputs[input_name]
             if isinstance(value, list):
                 from_node_id, from_socket = value
-                while (from_node_id, from_socket) in self.replacements:
-                    from_node_id, from_socket = self.replacements[(from_node_id, from_socket)]
                 input_type, input_category, input_info = self.get_input_info(unique_id, input_name)
                 if input_info is None or "lazy" not in input_info or not input_info["lazy"]:
                     self.add_strong_link(from_node_id, from_socket, unique_id, input_name)
@@ -109,20 +117,6 @@ class ExecutionList:
         assert self.staged_node_id is not None
         self.staged_node_id = None
 
-    def replace_executing_node(self, outputs):
-        assert self.staged_node_id is not None
-        print(self.staged_node_id, outputs)
-        for i in range(len(outputs)):
-            output = outputs[i]
-            for node_id, node_info in self.prompt.items():
-                for input_name, input_info in node_info.get("inputs", {}).items():
-                    if input_info == [self.staged_node_id, i]:
-                        print("Replacing %s:%s with %s" % (node_id, input_name, "link" if isinstance(output, list) else "object"))
-                        self.prompt[node_id]["inputs"][input_name] = output
-                        if isinstance(output, list) and self.blocking[self.staged_node_id][node_id][i]:
-                            self.add_strong_link(output[0], output[1], node_id, input_name)
-        # self.complete_node_execution()
-
     def complete_node_execution(self):
         node_id = self.staged_node_id
         del self.pendingNodes[node_id]
@@ -134,6 +128,29 @@ class ExecutionList:
     def is_empty(self):
         return len(self.pendingNodes) == 0
 
+class DynamicPrompt:
+    def __init__(self, original_prompt):
+        # The original prompt provided by the user
+        self.original_prompt = original_prompt
+        # Any extra pieces of the graph created during execution
+        self.ephemeral_prompt = {}
+        self.ephemeral_parents = {}
+
+    def get_node(self, node_id):
+        if node_id in self.ephemeral_prompt:
+            return self.ephemeral_prompt[node_id]
+        if node_id in self.original_prompt:
+            return self.original_prompt[node_id]
+        return None
+
+    def add_ephemeral_node(self, real_parent_id, node_id, node_info):
+        self.ephemeral_prompt[node_id] = node_info
+        self.ephemeral_parents[node_id] = real_parent_id
+
+    def get_real_node_id(self, node_id):
+        if node_id in self.ephemeral_parents:
+            return self.ephemeral_parents[node_id]
+        return node_id
 
 def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
@@ -193,22 +210,39 @@ def map_node_over_list(obj, input_data_all, func, allow_interrupt=False):
             results.append(getattr(obj, func)(**slice_dict(input_data_all, i)))
     return results
 
+def merge_result_data(results, obj):
+    print("Merging results: ", debugtype(results))
+    # check which outputs need concatenating
+    output = []
+    output_is_list = [False] * len(results[0])
+    if hasattr(obj, "OUTPUT_IS_LIST"):
+        output_is_list = obj.OUTPUT_IS_LIST
+
+    # merge node execution results
+    for i, is_list in zip(range(len(results[0])), output_is_list):
+        if is_list:
+            output.append([x for o in results for x in o[i]])
+        else:
+            output.append([o[i] for o in results])
+    return output
+
 def get_output_data(obj, input_data_all):
     
     results = []
     uis = []
     sync_results = []
-    graph_replacements = []
+    subgraph_results = []
     print("Getting output for %s" % obj.__class__.__name__)
     print("Have input data: ", len(input_data_all))
     for k in input_data_all.keys():
-        print("  %s: %s" % (k, type(input_data_all[k])))
+        print("  %s: %s" % (k, debugtype(input_data_all[k])))
     return_values = map_node_over_list(obj, input_data_all, obj.FUNCTION, allow_interrupt=True)
     print(obj.__class__.__name__)
-    print("Return values: ", len(return_values))
+    print("Return values: ", debugtype(return_values))
     for i in range(len(return_values)):
         print(" index %d (%s): %d" % (i, "list" if isinstance(return_values[i], list) else "tuple", len(return_values[i])))
 
+    has_subgraph = False
     for i in range(len(return_values)):
         r = return_values[i]
         if isinstance(r, dict):
@@ -216,36 +250,27 @@ def get_output_data(obj, input_data_all):
                 uis.append(r['ui'])
             if 'expand' in r:
                 # Perform an expansion, but do not append results
+                has_subgraph = True
                 new_graph = r['expand']
-                graph_replacements.append((new_graph, r.get("result", None)))
+                subgraph_results.append((new_graph, r.get("result", None)))
             elif 'result' in r:
                 results.append(r['result'])
+                subgraph_results.append((None, r['result']))
             if 'sync_result' in r:
                 sync_results.append(r['sync_result'])
         else:
             results.append(r)
     
-    output = []
-    if len(graph_replacements) == 1:
-        # TODO - Support multiple graph replacements
-        pass
+    if has_subgraph:
+        output = subgraph_results
     elif len(results) > 0:
-        # check which outputs need concatenating
-        output_is_list = [False] * len(results[0])
-        if hasattr(obj, "OUTPUT_IS_LIST"):
-            output_is_list = obj.OUTPUT_IS_LIST
-
-        # merge node execution results
-        for i, is_list in zip(range(len(results[0])), output_is_list):
-            if is_list:
-                output.append([x for o in results for x in o[i]])
-            else:
-                output.append([o[i] for o in results])
-
+        output = merge_result_data(results, obj)
+    else:
+        output = []
     ui = dict()    
     if len(uis) > 0:
         ui = {k: [y for x in uis for y in x[k]] for k in uis[0].keys()}
-    return output, ui, sync_results, graph_replacements
+    return output, ui, sync_results, has_subgraph
 
 def format_value(x):
     if x is None:
@@ -255,75 +280,129 @@ def format_value(x):
     else:
         return str(x)
 
-def non_recursive_execute(server, prompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, outputs_sync, object_storage, execution_list):
+def add_subgraph_prefix(graph, outputs, prefix):
+    # Change the node IDs and any internal links
+    new_graph = {}
+    for node_id, node_info in graph.items():
+        # Make sure the added nodes have unique IDs
+        new_node_id = prefix + node_id
+        new_node = { "class_type": node_info["class_type"], "inputs": {} }
+        for input_name, input_value in node_info.get("inputs", {}).items():
+            if isinstance(input_value, list):
+                new_node["inputs"][input_name] = [prefix + input_value[0], input_value[1]]
+            else:
+                new_node["inputs"][input_name] = input_value
+        new_graph[new_node_id] = new_node
+
+    # Change the node IDs in the outputs
+    new_outputs = []
+    for n in range(len(outputs)):
+        output = outputs[n]
+        if isinstance(output, list): # This is a node link
+            new_outputs.append([prefix + output[0], output[1]])
+        else:
+            new_outputs.append(output)
+
+    return new_graph, tuple(new_outputs)
+
+def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, outputs_sync, object_storage, execution_list, pending_subgraph_results):
     unique_id = current_item
-    inputs = prompt[unique_id]['inputs']
-    class_type = prompt[unique_id]['class_type']
+    real_node_id = dynprompt.get_real_node_id(unique_id)
+    inputs = dynprompt.get_node(unique_id)['inputs']
+    class_type = dynprompt.get_node(unique_id)['class_type']
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
     if unique_id in outputs:
         return (ExecutionResult.SUCCESS, None, None)
 
     input_data_all = None
     try:
-        input_data_all = get_input_data(inputs, class_def, unique_id, outputs, prompt, extra_data)
-        if server.client_id is not None:
-            server.last_node_id = unique_id
-            server.send_sync("executing", { "node": unique_id, "prompt_id": prompt_id }, server.client_id)
+        if unique_id in pending_subgraph_results:
+            cached_results = pending_subgraph_results[unique_id]
+            resolved_outputs = []
+            for is_subgraph, result in cached_results:
+                if not is_subgraph:
+                    resolved_outputs.append(result)
+                else:
+                    resolved_output = []
+                    for r in result:
+                        if isinstance(r, list) and len(r) == 2:
+                            source_node, source_output = r[0], r[1]
+                            node_output = outputs[source_node][source_output]
+                            print("Resolving output from subgraph node: %s, %s: %s" % (source_node, source_output, debugtype(node_output)))
+                            for o in node_output:
+                                resolved_output.append(o)
 
-        obj = object_storage.get((unique_id, class_type), None)
-        if obj is None:
-            obj = class_def()
-            object_storage[(unique_id, class_type)] = obj
+                        else:
+                            resolved_output.append(r)
+                    resolved_outputs.append(tuple(resolved_output))
+            output_data = merge_result_data(resolved_outputs, class_def)
+            print("Resolved output data from subgraph: ", debugtype(output_data))
+            output_ui = []
+            output_sync = []
+            has_subgraph = False
+        else:
+            input_data_all = get_input_data(inputs, class_def, unique_id, outputs, dynprompt.original_prompt, extra_data)
+            if server.client_id is not None:
+                server.last_node_id = unique_id
+                server.send_sync("executing", { "node": unique_id, "prompt_id": prompt_id }, server.client_id)
 
-        if hasattr(obj, "check_lazy_status"):
-            required_inputs = map_node_over_list(obj, input_data_all, "check_lazy_status", allow_interrupt=True)
-            required_inputs = set(sum([r for r in required_inputs if isinstance(r,list)], []))
-            required_inputs = [x for x in required_inputs if x not in input_data_all]
-            if len(required_inputs) > 0:
-                for i in required_inputs:
-                    execution_list.add_strong_input_link(unique_id, i)
-                print("Sleeping waiting for inputs inputs: ", required_inputs)
-                return (ExecutionResult.SLEEPING, None, None)
+            obj = object_storage.get((unique_id, class_type), None)
+            if obj is None:
+                obj = class_def()
+                object_storage[(unique_id, class_type)] = obj
 
-        output_data, output_ui, output_sync, graph_replacements = get_output_data(obj, input_data_all)
+            if hasattr(obj, "check_lazy_status"):
+                required_inputs = map_node_over_list(obj, input_data_all, "check_lazy_status", allow_interrupt=True)
+                required_inputs = set(sum([r for r in required_inputs if isinstance(r,list)], []))
+                required_inputs = [x for x in required_inputs if x not in input_data_all]
+                if len(required_inputs) > 0:
+                    for i in required_inputs:
+                        execution_list.make_input_strong_link(unique_id, i)
+                    print("Sleeping waiting for inputs inputs: ", required_inputs)
+                    return (ExecutionResult.SLEEPING, None, None)
+
+            output_data, output_ui, output_sync, has_subgraph = get_output_data(obj, input_data_all)
+            print("Resolved actual output data: ", debugtype(output_data))
         if len(output_ui) > 0:
             outputs_ui[unique_id] = output_ui
             if server.client_id is not None:
                 server.send_sync("executed", { "node": unique_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
         if len(output_sync) > 0:
             outputs_sync[unique_id] = output_sync
-        if len(graph_replacements) > 0:
-            for i in range(len(graph_replacements)):
-                new_graph, node_outputs = graph_replacements[i]
-                def map_id(subgraph_id):
-                    return "%s.%d.%s" % (unique_id, i, subgraph_id)
-                for node_id, node_info in new_graph.items():
-                    # Make sure the added nodes have unique IDs
-                    node_id = map_id(node_id)
-                    new_node = { "class_type": node_info["class_type"], "inputs": {} }
-                    for input_name, input_value in node_info.get("inputs", {}).items():
-                        if isinstance(input_value, list):
-                            new_node["inputs"][input_name] = [map_id(input_value[0]), input_value[1]]
-                        else:
-                            new_node["inputs"][input_name] = input_value
-                    prompt[node_id] = new_node
-                new_outputs = []
-                for n in range(len(node_outputs)):
-                    output = node_outputs[n]
-                    if isinstance(output, list): # This is a node link
-                        new_id = map_id(output[0])
-                        new_outputs.append([new_id, output[1]])
-                    else:
-                        new_outputs.append(output)
-                execution_list.replace_executing_node(tuple(new_outputs))
-            return (ExecutionResult.REPLACEMENT, None, None)
+        if has_subgraph:
+            cached_outputs = []
+            for i in range(len(output_data)):
+                new_graph, node_outputs = output_data[i]
+                if new_graph is None:
+                    cached_outputs.append((False, node_outputs))
+                else:
+                    new_graph, node_outputs = add_subgraph_prefix(new_graph, node_outputs, "%s.%d." % (unique_id, i))
+                    new_output_ids = []
+                    for node_id, node_info in new_graph.items():
+                        dynprompt.add_ephemeral_node(real_node_id, node_id, node_info)
+                        # Figure out if the newly created node is an output node
+                        class_type = node_info["class_type"]
+                        class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
+                        if hasattr(class_def, 'OUTPUT_NODE') and class_def.OUTPUT_NODE == True:
+                            new_output_ids.append(node_id)
+                    for node_id in new_output_ids:
+                        execution_list.add_node(node_id)
+                    for i in range(len(node_outputs)):
+                        if isinstance(node_outputs[i], list) and len(node_outputs[i]) == 2:
+                            from_node_id, from_socket = node_outputs[i][0], node_outputs[i][1]
+                            execution_list.add_strong_link(from_node_id, from_socket, unique_id, -1)
+                    # TODO - If we expand out an IS_OUTPUT node, should we add it to the execution list immediately?
+                    cached_outputs.append((True, node_outputs))
+            pending_subgraph_results[unique_id] = cached_outputs
+            print("Sleeping after subgraph expansion")
+            return (ExecutionResult.SLEEPING, None, None)
         outputs[unique_id] = output_data
     except comfy.model_management.InterruptProcessingException as iex:
         print("Processing interrupted")
 
         # skip formatting inputs/outputs
         error_details = {
-            "node_id": unique_id,
+            "node_id": real_node_id,
         }
 
         return (ExecutionResult.FAILURE, error_details, iex)
@@ -344,7 +423,7 @@ def non_recursive_execute(server, prompt, outputs, current_item, extra_data, exe
         print(traceback.format_exc())
 
         error_details = {
-            "node_id": unique_id,
+            "node_id": real_node_id,
             "exception_message": str(ex),
             "exception_type": exception_type,
             "traceback": traceback.format_tb(tb),
@@ -356,23 +435,6 @@ def non_recursive_execute(server, prompt, outputs, current_item, extra_data, exe
     executed.add(unique_id)
 
     return (ExecutionResult.SUCCESS, None, None)
-
-def recursive_will_execute(prompt, outputs, current_item):
-    unique_id = current_item
-    inputs = prompt[unique_id]['inputs']
-    will_execute = []
-    if unique_id in outputs:
-        return []
-
-    for x in inputs:
-        input_data = inputs[x]
-        if isinstance(input_data, list):
-            input_unique_id = input_data[0]
-            output_index = input_data[1]
-            if input_unique_id not in outputs:
-                will_execute += recursive_will_execute(prompt, outputs, input_unique_id)
-
-    return will_execute + [unique_id]
 
 def recursive_output_delete_if_changed(prompt, old_prompt, outputs, current_item):
     unique_id = current_item
@@ -525,24 +587,27 @@ class PromptExecutor:
 
             if self.server.client_id is not None:
                 self.server.send_sync("execution_cached", { "nodes": list(current_outputs) , "prompt_id": prompt_id}, self.server.client_id)
+            pending_subgraph_results = {}
+            dynamic_prompt = DynamicPrompt(prompt)
             executed = set()
-            execution_list = ExecutionList(prompt, self.outputs)
+            execution_list = ExecutionList(dynamic_prompt, self.outputs)
             for node_id in list(execute_outputs):
                 execution_list.add_node(node_id)
 
             while not execution_list.is_empty():
                 node_id = execution_list.stage_node_execution()
-                result, error, ex = non_recursive_execute(self.server, prompt, self.outputs, node_id, extra_data, executed, prompt_id, self.outputs_ui, self.outputs_sync, self.object_storage, execution_list)
+                result, error, ex = non_recursive_execute(self.server, dynamic_prompt, self.outputs, node_id, extra_data, executed, prompt_id, self.outputs_ui, self.outputs_sync, self.object_storage, execution_list, pending_subgraph_results)
                 if result == ExecutionResult.FAILURE:
-                    self.handle_execution_error(prompt_id, prompt, current_outputs, executed, error, ex)
+                    self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
                     break
                 elif result == ExecutionResult.SLEEPING:
                     execution_list.unstage_node_execution()
-                else: # result == ExecutionResult.SUCCESS or result == ExecutionResult.REPLACEMENT
+                else: # result == ExecutionResult.SUCCESS
                     execution_list.complete_node_execution()
 
             for x in executed:
-                self.old_prompt[x] = copy.deepcopy(prompt[x])
+                if x in prompt:
+                    self.old_prompt[x] = copy.deepcopy(prompt[x])
             self.server.last_node_id = None
 
 

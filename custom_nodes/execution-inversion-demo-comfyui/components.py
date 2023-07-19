@@ -74,6 +74,7 @@ class ComponentMetadata:
         return {
             "required": {
                 "name": ("STRING", {"multiline": False}),
+                "always_output": ([False, True],),
             },
         }
 
@@ -124,9 +125,11 @@ def LoadComponent(component_file):
         component_display_name = component_raw_name
         component_inputs = []
         component_outputs = []
+        is_output_component = False
         for node_id, data in graph.items():
             if data["class_type"] == "ComponentMetadata":
-                component_display_name = data["inputs"]["name"]
+                component_display_name = data["inputs"].get("name", component_raw_name)
+                is_output_component = data["inputs"].get("always_output", False)
             elif data["class_type"] == "ComponentInput":
                 data_type = data["inputs"]["data_type"]
                 if len(data_type) > 0 and data_type[0] == "[":
@@ -179,6 +182,7 @@ def LoadComponent(component_file):
         FUNCTION = "expand_component"
 
         CATEGORY = "Custom Components"
+        OUTPUT_NODE = is_output_component
 
         def expand_component(self, **kwargs):
             new_graph = copy.deepcopy(graph)

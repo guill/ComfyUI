@@ -13,6 +13,7 @@ import torch
 import nodes
 
 import comfy.model_management
+import comfy.graph_utils
 
 def debugtype(obj):
     result = obj.__class__.__name__
@@ -110,7 +111,17 @@ class ExecutionList:
         available = [node_id for node_id in self.pendingNodes if self.blockCount[node_id] == 0]
         if len(available) == 0:
             raise Exception("Dependency cycle detected")
-        self.staged_node_id = available[0]
+        next_node = available[0]
+        # If an output node is available, do that first.
+        # Technically this has no effect on the overall length of execution, but it feels better as a user
+        # for a PreviewImage to display a result as soon as it can
+        for node_id in available:
+            class_type = self.dynprompt.get_node(node_id)["class_type"]
+            class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
+            if hasattr(class_def, 'OUTPUT_NODE') and class_def.OUTPUT_NODE == True:
+                next_node = node_id
+                break
+        self.staged_node_id = next_node
         return self.staged_node_id
 
     def unstage_node_execution(self):
@@ -280,31 +291,6 @@ def format_value(x):
     else:
         return str(x)
 
-def add_subgraph_prefix(graph, outputs, prefix):
-    # Change the node IDs and any internal links
-    new_graph = {}
-    for node_id, node_info in graph.items():
-        # Make sure the added nodes have unique IDs
-        new_node_id = prefix + node_id
-        new_node = { "class_type": node_info["class_type"], "inputs": {} }
-        for input_name, input_value in node_info.get("inputs", {}).items():
-            if isinstance(input_value, list):
-                new_node["inputs"][input_name] = [prefix + input_value[0], input_value[1]]
-            else:
-                new_node["inputs"][input_name] = input_value
-        new_graph[new_node_id] = new_node
-
-    # Change the node IDs in the outputs
-    new_outputs = []
-    for n in range(len(outputs)):
-        output = outputs[n]
-        if isinstance(output, list): # This is a node link
-            new_outputs.append([prefix + output[0], output[1]])
-        else:
-            new_outputs.append(output)
-
-    return new_graph, tuple(new_outputs)
-
 def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, outputs_sync, object_storage, execution_list, pending_subgraph_results):
     unique_id = current_item
     real_node_id = dynprompt.get_real_node_id(unique_id)
@@ -343,8 +329,8 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
         else:
             input_data_all = get_input_data(inputs, class_def, unique_id, outputs, dynprompt.original_prompt, extra_data)
             if server.client_id is not None:
-                server.last_node_id = unique_id
-                server.send_sync("executing", { "node": unique_id, "prompt_id": prompt_id }, server.client_id)
+                server.last_node_id = real_node_id
+                server.send_sync("executing", { "node": real_node_id, "prompt_id": prompt_id }, server.client_id)
 
             obj = object_storage.get((unique_id, class_type), None)
             if obj is None:
@@ -366,7 +352,7 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
         if len(output_ui) > 0:
             outputs_ui[unique_id] = output_ui
             if server.client_id is not None:
-                server.send_sync("executed", { "node": unique_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
+                server.send_sync("executed", { "node": real_node_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
         if len(output_sync) > 0:
             outputs_sync[unique_id] = output_sync
         if has_subgraph:
@@ -376,7 +362,11 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                 if new_graph is None:
                     cached_outputs.append((False, node_outputs))
                 else:
-                    new_graph, node_outputs = add_subgraph_prefix(new_graph, node_outputs, "%s.%d." % (unique_id, i))
+                    # Check for conflicts
+                    for node_id in new_graph.keys():
+                        if dynprompt.get_node(node_id) is not None:
+                            new_graph, node_outputs = comfy.graph_utils.add_graph_prefix(new_graph, node_outputs, "%s.%d." % (unique_id, i))
+                            break
                     new_output_ids = []
                     for node_id, node_info in new_graph.items():
                         dynprompt.add_ephemeral_node(real_node_id, node_id, node_info)
@@ -391,7 +381,6 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                         if isinstance(node_outputs[i], list) and len(node_outputs[i]) == 2:
                             from_node_id, from_socket = node_outputs[i][0], node_outputs[i][1]
                             execution_list.add_strong_link(from_node_id, from_socket, unique_id, -1)
-                    # TODO - If we expand out an IS_OUTPUT node, should we add it to the execution list immediately?
                     cached_outputs.append((True, node_outputs))
             pending_subgraph_results[unique_id] = cached_outputs
             print("Sleeping after subgraph expansion")

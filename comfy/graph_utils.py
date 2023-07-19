@@ -26,6 +26,7 @@ class GraphBuilder:
         return node
 
     def lookup_node(self, id):
+        id = self.prefix + id
         return self.nodes.get(id)
 
     def finalize(self):

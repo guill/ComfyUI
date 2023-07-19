@@ -163,7 +163,7 @@ class DynamicPrompt:
             return self.ephemeral_parents[node_id]
         return node_id
 
-def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_data={}):
+def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, dynprompt=None, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
     input_data_all = {}
     for x in inputs:
@@ -187,6 +187,8 @@ def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_da
         for x in h:
             if h[x] == "PROMPT":
                 input_data_all[x] = [prompt]
+            if h[x] == "DYNPROMPT":
+                input_data_all[x] = [dynprompt]
             if h[x] == "EXTRA_PNGINFO":
                 if "extra_pnginfo" in extra_data:
                     input_data_all[x] = [extra_data['extra_pnginfo']]
@@ -327,7 +329,7 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
             output_sync = []
             has_subgraph = False
         else:
-            input_data_all = get_input_data(inputs, class_def, unique_id, outputs, dynprompt.original_prompt, extra_data)
+            input_data_all = get_input_data(inputs, class_def, unique_id, outputs, dynprompt.original_prompt, dynprompt, extra_data)
             if server.client_id is not None:
                 server.last_node_id = real_node_id
                 server.send_sync("executing", { "node": real_node_id, "prompt_id": prompt_id }, server.client_id)

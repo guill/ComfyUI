@@ -15,20 +15,6 @@ import nodes
 import comfy.model_management
 import comfy.graph_utils
 
-def debugtype(obj):
-    result = obj.__class__.__name__
-    if isinstance(obj, list):
-        result += "["
-        for i in range(len(obj)):
-            result += (debugtype(obj[i]) + ",")
-        result += "]"
-    if isinstance(obj, tuple):
-        result += "("
-        for i in range(len(obj)):
-            result += (debugtype(obj[i]) + ",")
-        result += ")"
-    return result
-
 class ExecutionResult(Enum):
     SUCCESS = 0
     FAILURE = 1
@@ -74,10 +60,9 @@ class ExecutionList:
         if not isinstance(value, list):
             raise Exception("Node %s says it needs input %s, but that value is a constant" % (to_node_id, to_input))
         from_node_id, from_socket = value
-        self.add_strong_link(from_node_id, from_socket, to_node_id, to_input)
+        self.add_strong_link(from_node_id, from_socket, to_node_id)
 
-    def add_strong_link(self, from_node_id, from_socket, to_node_id, to_input):
-        print("Adding strong link from %s:%s to %s:%s" % (from_node_id, from_socket, to_node_id, to_input))
+    def add_strong_link(self, from_node_id, from_socket, to_node_id):
         if from_node_id in self.outputs:
             # Nothing to do
             return
@@ -90,7 +75,6 @@ class ExecutionList:
     def add_node(self, unique_id):
         if unique_id in self.pendingNodes:
             return
-        print("Adding node %s" % unique_id)
         self.pendingNodes[unique_id] = True
         self.blockCount[unique_id] = 0
         self.blocking[unique_id] = {}
@@ -102,7 +86,7 @@ class ExecutionList:
                 from_node_id, from_socket = value
                 input_type, input_category, input_info = self.get_input_info(unique_id, input_name)
                 if input_info is None or "lazy" not in input_info or not input_info["lazy"]:
-                    self.add_strong_link(from_node_id, from_socket, unique_id, input_name)
+                    self.add_strong_link(from_node_id, from_socket, unique_id)
 
     def stage_node_execution(self):
         assert self.staged_node_id is None
@@ -172,14 +156,11 @@ def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, dynpromp
             input_unique_id = input_data[0]
             output_index = input_data[1]
             if input_unique_id not in outputs:
-                print("Skipping non-existent input for %s from %s:%s" % (x, input_unique_id, output_index))
                 continue # This might be a lazily-evaluated input
             obj = outputs[input_unique_id][output_index]
             input_data_all[x] = obj
-            print("Adding link input for %s from %s:%s" % (x, input_unique_id, output_index))
         else:
             if ("required" in valid_inputs and x in valid_inputs["required"]) or ("optional" in valid_inputs and x in valid_inputs["optional"]) or ("hidden" in valid_inputs and x in valid_inputs["hidden"]):
-                print("Adding raw input for %s of type %s (%s)" % (x, type(input_data).__name__, input_data))
                 input_data_all[x] = [input_data]
 
     if "hidden" in valid_inputs:
@@ -224,7 +205,6 @@ def map_node_over_list(obj, input_data_all, func, allow_interrupt=False):
     return results
 
 def merge_result_data(results, obj):
-    print("Merging results: ", debugtype(results))
     # check which outputs need concatenating
     output = []
     output_is_list = [False] * len(results[0])
@@ -245,16 +225,7 @@ def get_output_data(obj, input_data_all):
     uis = []
     sync_results = []
     subgraph_results = []
-    print("Getting output for %s" % obj.__class__.__name__)
-    print("Have input data: ", len(input_data_all))
-    for k in input_data_all.keys():
-        print("  %s: %s" % (k, debugtype(input_data_all[k])))
     return_values = map_node_over_list(obj, input_data_all, obj.FUNCTION, allow_interrupt=True)
-    print(obj.__class__.__name__)
-    print("Return values: ", debugtype(return_values))
-    for i in range(len(return_values)):
-        print(" index %d (%s): %d" % (i, "list" if isinstance(return_values[i], list) else "tuple", len(return_values[i])))
-
     has_subgraph = False
     for i in range(len(return_values)):
         r = return_values[i]
@@ -316,7 +287,6 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                         if isinstance(r, list) and len(r) == 2:
                             source_node, source_output = r[0], r[1]
                             node_output = outputs[source_node][source_output]
-                            print("Resolving output from subgraph node: %s, %s: %s" % (source_node, source_output, debugtype(node_output)))
                             for o in node_output:
                                 resolved_output.append(o)
 
@@ -324,7 +294,6 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                             resolved_output.append(r)
                     resolved_outputs.append(tuple(resolved_output))
             output_data = merge_result_data(resolved_outputs, class_def)
-            print("Resolved output data from subgraph: ", debugtype(output_data))
             output_ui = []
             output_sync = []
             has_subgraph = False
@@ -346,11 +315,9 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                 if len(required_inputs) > 0:
                     for i in required_inputs:
                         execution_list.make_input_strong_link(unique_id, i)
-                    print("Sleeping waiting for inputs inputs: ", required_inputs)
                     return (ExecutionResult.SLEEPING, None, None)
 
             output_data, output_ui, output_sync, has_subgraph = get_output_data(obj, input_data_all)
-            print("Resolved actual output data: ", debugtype(output_data))
         if len(output_ui) > 0:
             outputs_ui[unique_id] = output_ui
             if server.client_id is not None:
@@ -382,10 +349,9 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                     for i in range(len(node_outputs)):
                         if isinstance(node_outputs[i], list) and len(node_outputs[i]) == 2:
                             from_node_id, from_socket = node_outputs[i][0], node_outputs[i][1]
-                            execution_list.add_strong_link(from_node_id, from_socket, unique_id, -1)
+                            execution_list.add_strong_link(from_node_id, from_socket, unique_id)
                     cached_outputs.append((True, node_outputs))
             pending_subgraph_results[unique_id] = cached_outputs
-            print("Sleeping after subgraph expansion")
             return (ExecutionResult.SLEEPING, None, None)
         outputs[unique_id] = output_data
     except comfy.model_management.InterruptProcessingException as iex:

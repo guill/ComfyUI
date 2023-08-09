@@ -17,9 +17,12 @@ import comfy.graph_utils
 from comfy.graph_utils import is_link, ExecutionBlocker, GraphBuilder
 
 class ExecutionResult(Enum):
-    SUCCESS = 0
-    FAILURE = 1
-    SLEEPING = 2
+    SUCCESS_EXECUTED = 0
+    SUCCESS_RESOLVED_SUBGRAPH = 1
+    SUCCESS_CACHED = 2
+    FAILURE = 3
+    SLEEPING_LAZY = 4
+    SLEEPING_SUBGRAPH = 5
 
 def get_input_info(class_def, input_name):
     valid_inputs = class_def.INPUT_TYPES()
@@ -74,7 +77,7 @@ class TopologicalSort:
             self.blockCount[to_node_id] += 1
         self.blocking[from_node_id][to_node_id][from_socket] = True
 
-    def add_node(self, unique_id):
+    def add_node(self, unique_id, include_lazy=False, subgraph_nodes=None):
         if unique_id in self.pendingNodes:
             return
         self.pendingNodes[unique_id] = True
@@ -86,8 +89,11 @@ class TopologicalSort:
             value = inputs[input_name]
             if is_link(value):
                 from_node_id, from_socket = value
+                if subgraph_nodes is not None and from_node_id not in subgraph_nodes:
+                    continue
                 input_type, input_category, input_info = self.get_input_info(unique_id, input_name)
-                if "lazy" not in input_info or not input_info["lazy"]:
+                is_lazy = "lazy" in input_info and input_info["lazy"]
+                if include_lazy or not is_lazy:
                     self.add_strong_link(from_node_id, from_socket, unique_id)
 
     def get_ready_nodes(self):
@@ -103,13 +109,13 @@ class TopologicalSort:
         return len(self.pendingNodes) == 0
 
 class ExecutionList(TopologicalSort):
-    def __init__(self, dynprompt, outputs):
+    def __init__(self, dynprompt):
         super().__init__(dynprompt)
-        self.outputs = outputs
+        self.executed = set()
         self.staged_node_id = None
 
     def add_strong_link(self, from_node_id, from_socket, to_node_id):
-        if from_node_id in self.outputs:
+        if from_node_id in self.executed:
             # Nothing to do
             return
         super().add_strong_link(from_node_id, from_socket, to_node_id)
@@ -141,6 +147,7 @@ class ExecutionList(TopologicalSort):
 
     def complete_node_execution(self):
         node_id = self.staged_node_id
+        self.executed.add(node_id)
         self.pop_node(node_id)
         self.staged_node_id = None
 
@@ -153,6 +160,7 @@ class DynamicPrompt:
         self.ephemeral_prompt = {}
         self.ephemeral_parents = {}
         self.ephemeral_display = {}
+        self.ephemeral_children = {}
 
     def get_node(self, node_id):
         if node_id in self.ephemeral_prompt:
@@ -164,6 +172,10 @@ class DynamicPrompt:
     def add_ephemeral_node(self, node_id, node_info, parent_id, display_id):
         self.ephemeral_prompt[node_id] = node_info
         self.ephemeral_parents[node_id] = parent_id
+        self.ephemeral_display[node_id] = display_id
+        if parent_id not in self.ephemeral_children:
+            self.ephemeral_children[parent_id] = []
+        self.ephemeral_children[parent_id].append(node_id)
 
     def get_real_node_id(self, node_id):
         while node_id in self.ephemeral_parents:
@@ -177,6 +189,17 @@ class DynamicPrompt:
         while node_id in self.ephemeral_display:
             node_id = self.ephemeral_display[node_id]
         return node_id
+
+    def get_nodes_with_parent(self, parent_id):
+        if parent_id is None:
+            return [node_id for node_id in self.original_prompt]
+        else:
+            return self.ephemeral_children.get(parent_id, [])
+
+    def copy_descendants(self, other, node_id):
+        for child_id in other.get_nodes_with_parent(node_id):
+            self.add_ephemeral_node(child_id, other.get_node(child_id), node_id, other.ephemeral_display.get(child_id, None))
+            self.copy_descendants(other, child_id)
 
 def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, dynprompt=None, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
@@ -323,7 +346,7 @@ def format_value(x):
     else:
         return str(x)
 
-def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, object_storage, execution_list, pending_subgraph_results):
+def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, object_storage, execution_list, pending_subgraph_results, old_prompt):
     unique_id = current_item
     real_node_id = dynprompt.get_real_node_id(unique_id)
     display_node_id = dynprompt.get_display_node_id(unique_id)
@@ -331,11 +354,14 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
     class_type = dynprompt.get_node(unique_id)['class_type']
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
     if unique_id in outputs:
-        return (ExecutionResult.SUCCESS, None, None)
+        print("--> Node {}: Using cached output".format(unique_id))
+        return (ExecutionResult.SUCCESS_CACHED, None, None)
 
     input_data_all = None
+    resolved_subgraph = False
     try:
         if unique_id in pending_subgraph_results:
+            print("--> Node {}: Resolving subgraph".format(unique_id))
             cached_results = pending_subgraph_results[unique_id]
             resolved_outputs = []
             for is_subgraph, result in cached_results:
@@ -356,16 +382,18 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
             output_data = merge_result_data(resolved_outputs, class_def)
             output_ui = []
             has_subgraph = False
+            resolved_subgraph = True
         else:
+            print("--> Node {}: Executing".format(unique_id))
             input_data_all = get_input_data(inputs, class_def, unique_id, outputs, dynprompt.original_prompt, dynprompt, extra_data)
             if server.client_id is not None:
                 server.last_node_id = display_node_id
                 server.send_sync("executing", { "node": display_node_id, "prompt_id": prompt_id }, server.client_id)
 
-            obj = object_storage.get((unique_id, class_type), None)
+            obj = object_storage.get(unique_id, None)
             if obj is None:
                 obj = class_def()
-                object_storage[(unique_id, class_type)] = obj
+                object_storage[unique_id] = obj
 
             if hasattr(obj, "check_lazy_status"):
                 required_inputs = map_node_over_list(obj, input_data_all, "check_lazy_status", allow_interrupt=True)
@@ -374,7 +402,7 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                 if len(required_inputs) > 0:
                     for i in required_inputs:
                         execution_list.make_input_strong_link(unique_id, i)
-                    return (ExecutionResult.SLEEPING, None, None)
+                    return (ExecutionResult.SLEEPING_LAZY, None, None)
 
             def execution_block_cb(block):
                 if block.message is not None:
@@ -430,7 +458,7 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                             execution_list.add_strong_link(from_node_id, from_socket, unique_id)
                     cached_outputs.append((True, node_outputs))
             pending_subgraph_results[unique_id] = cached_outputs
-            return (ExecutionResult.SLEEPING, None, None)
+            return (ExecutionResult.SLEEPING_SUBGRAPH, None, None)
         outputs[unique_id] = output_data
     except comfy.model_management.InterruptProcessingException as iex:
         print("Processing interrupted")
@@ -469,67 +497,145 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
 
     executed.add(unique_id)
 
-    return (ExecutionResult.SUCCESS, None, None)
+    result = ExecutionResult.SUCCESS_RESOLVED_SUBGRAPH if resolved_subgraph else ExecutionResult.SUCCESS_EXECUTED
+    return (result, None, None)
 
-def recursive_output_delete_if_changed(prompt, old_prompt, outputs, current_item):
-    unique_id = current_item
-    inputs = prompt[unique_id]['inputs']
-    class_type = prompt[unique_id]['class_type']
-    class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
-
-    is_changed_old = ''
-    is_changed = ''
-    to_delete = False
-    if hasattr(class_def, 'IS_CHANGED'):
-        if unique_id in old_prompt and 'is_changed' in old_prompt[unique_id]:
-            is_changed_old = old_prompt[unique_id]['is_changed']
-        if 'is_changed' not in prompt[unique_id]:
-            input_data_all = get_input_data(inputs, class_def, unique_id, outputs)
-            if input_data_all is not None:
-                try:
-                    #is_changed = class_def.IS_CHANGED(**input_data_all)
-                    is_changed = map_node_over_list(class_def, input_data_all, "IS_CHANGED")
-                    prompt[unique_id]['is_changed'] = [None if isinstance(x, ExecutionBlocker) else x for x in is_changed]
-                except:
-                    to_delete = True
-        else:
-            is_changed = prompt[unique_id]['is_changed']
-
-    if unique_id not in outputs:
+def inputs_equal(a, b):
+    if a.__class__ != b.__class__:
+        return False
+    if isinstance(a, list):
+        if len(a) != len(b):
+            return False
+        for i in range(len(a)):
+            if not inputs_equal(a[i], b[i]):
+                return False
         return True
+    elif isinstance(a, dict):
+        if len(a) != len(b):
+            return False
+        for k in a.keys():
+            if k not in b:
+                return False
+            if not inputs_equal(a[k], b[k]):
+                return False
+        return True
+    elif isinstance(a, torch.Tensor):
+        if a.shape != b.shape:
+            return False
+        return torch.all(a.eq(b)).item() == 1
+    else:
+        try:
+            return a == b
+        except:
+            # We can't compare inputs -- assume they're different
+            return False
 
-    if not to_delete:
-        if is_changed != is_changed_old:
-            to_delete = True
-        elif unique_id not in old_prompt:
-            to_delete = True
-        elif inputs == old_prompt[unique_id]['inputs']:
-            for x in inputs:
-                input_data = inputs[x]
+def remove_stale_cache_entries(dynprompt, old_prompt, outputs, object_storage, dirty_set, parent_id=None):
+    print("Removing stale cache entries with parent {}".format(parent_id))
+    # Delete objects that are no longer here
+    removed_set = set()
+    to_delete = []
+    old_subgraph_nodes = old_prompt.get_nodes_with_parent(parent_id)
+    for node_id in old_subgraph_nodes:
+        old_node = old_prompt.get_node(node_id)
+        new_node = dynprompt.get_node(node_id)
+        old_parent_id = old_prompt.get_parent_node_id(node_id)
+        new_parent_id = dynprompt.get_parent_node_id(node_id)
+        if old_node is not None and new_node is not None and old_parent_id != new_parent_id:
+            print("Node {} has changed parents from {} to {}".format(node_id, old_parent_id, new_parent_id))
+            removed_set.add(node_id)
+        elif old_parent_id != parent_id:
+            continue
+        elif new_node is None:
+            print("Node {} has been removed".format(node_id, old_parent_id, new_parent_id))
+            removed_set.add(node_id)
+        elif old_node["class_type"] != new_node["class_type"]:
+            print("Node {} has changed types".format(node_id, old_parent_id, new_parent_id))
+            removed_set.add(node_id)
+    dirty_set.update(removed_set)
+    for node_id in removed_set:
+        d = outputs.pop(node_id, None)
+        if d is not None:
+            del d
+        d = object_storage.pop(node_id, None)
+        if d is not None:
+            del d
+        remove_stale_cache_entries(dynprompt, old_prompt, outputs, object_storage, dirty_set, parent_id=node_id)
+        
+    # Create a topological sort of new nodes
+    subgraph_nodes = dynprompt.get_nodes_with_parent(parent_id)
+    sorted = TopologicalSort(dynprompt)
+    for node in subgraph_nodes:
+        sorted.add_node(node, include_lazy=True, subgraph_nodes=subgraph_nodes)
 
-                if is_link(input_data):
-                    input_unique_id = input_data[0]
-                    output_index = input_data[1]
-                    if input_unique_id in outputs:
-                        to_delete = recursive_output_delete_if_changed(prompt, old_prompt, outputs, input_unique_id)
-                    else:
-                        to_delete = True
-                    if to_delete:
-                        break
-        else:
-            to_delete = True
+    while not sorted.is_empty():
+        ready_nodes = sorted.get_ready_nodes()
+        print("Processing batch of {} ready nodes: {}".format(len(ready_nodes), ready_nodes))
+        if len(ready_nodes) == 0:
+            raise Exception("Circular dependency detected in subgraph")
+        newly_dirty = set()
+        for node_id in ready_nodes:
+            print("Node {} checking dirty state".format(node_id))
+            sorted.pop_node(node_id)
+            node = dynprompt.get_node(node_id)
+            old_node = old_prompt.get_node(node_id)
+            inputs = node['inputs']
+            class_type = node['class_type']
+            class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
 
-    if to_delete:
-        d = outputs.pop(unique_id)
-        del d
-    return to_delete
+            is_changed_old = ''
+            is_changed = ''
+            if hasattr(class_def, 'IS_CHANGED'):
+                if old_node is not None and 'is_changed' in old_node:
+                    is_changed_old = old_node['is_changed']
+                if 'is_changed' not in node:
+                    input_data_all = get_input_data(inputs, class_def, node_id, outputs)
+                    if input_data_all is not None:
+                        try:
+                            #is_changed = class_def.IS_CHANGED(**input_data_all)
+                            is_changed = map_node_over_list(class_def, input_data_all, "IS_CHANGED")
+                            node['is_changed'] = [None if isinstance(x, ExecutionBlocker) else x for x in is_changed]
+                        except:
+                            newly_dirty.add(node_id)
+                else:
+                    is_changed = node['is_changed']
+
+            if node_id not in outputs:
+                print("Node {} is stale: not in outputs".format(node_id))
+                newly_dirty.add(node_id)
+            elif node_id not in newly_dirty:
+                if not inputs_equal(is_changed, is_changed_old):
+                    print("Node {} is stale: is_changed changed".format(node_id))
+                    newly_dirty.add(node_id)
+                elif not inputs_equal(inputs, old_node['inputs']):
+                    print("Node {} is stale: inputs changed".format(node_id))
+                    newly_dirty.add(node_id)
+                else:
+                    for x in inputs:
+                        input_data = inputs[x]
+
+                        if is_link(input_data):
+                            input_unique_id = input_data[0]
+                            if input_unique_id not in outputs:
+                                print("Node {} is stale: input {} not in outputs".format(node_id, input_unique_id))
+                                newly_dirty.add(node_id)
+                                break
+                            elif input_unique_id in dirty_set:
+                                print("Node {} is stale: input {} is dirty".format(node_id, input_unique_id))
+                                newly_dirty.add(node_id)
+                                break
+            if node_id in newly_dirty:
+                d = outputs.pop(node_id, None)
+                if d is not None:
+                    del d
+        dirty_set.update(newly_dirty)
 
 class PromptExecutor:
     def __init__(self, server):
         self.outputs = {}
         self.object_storage = {}
         self.outputs_ui = {}
-        self.old_prompt = {}
+        self.old_prompt = DynamicPrompt({})
         self.server = server
 
     def handle_execution_error(self, prompt_id, prompt, current_outputs, executed, error, ex):
@@ -587,27 +693,10 @@ class PromptExecutor:
 
         with torch.inference_mode():
             #delete cached outputs if nodes don't exist for them
-            to_delete = []
-            for o in self.outputs:
-                if o not in prompt:
-                    to_delete += [o]
-            for o in to_delete:
-                d = self.outputs.pop(o)
-                del d
-            to_delete = []
-            for o in self.object_storage:
-                if o[0] not in prompt:
-                    to_delete += [o]
-                else:
-                    p = prompt[o[0]]
-                    if o[1] != p['class_type']:
-                        to_delete += [o]
-            for o in to_delete:
-                d = self.object_storage.pop(o)
-                del d
 
-            for x in prompt:
-                recursive_output_delete_if_changed(prompt, self.old_prompt, self.outputs, x)
+            dynamic_prompt = DynamicPrompt(prompt)
+            dirty_set = set()
+            remove_stale_cache_entries(dynamic_prompt, self.old_prompt, self.outputs, self.object_storage, dirty_set, parent_id=None)
 
             current_outputs = set(self.outputs.keys())
             for x in list(self.outputs_ui.keys()):
@@ -618,26 +707,35 @@ class PromptExecutor:
             if self.server.client_id is not None:
                 self.server.send_sync("execution_cached", { "nodes": list(current_outputs) , "prompt_id": prompt_id}, self.server.client_id)
             pending_subgraph_results = {}
-            dynamic_prompt = DynamicPrompt(prompt)
             executed = set()
-            execution_list = ExecutionList(dynamic_prompt, self.outputs)
+            execution_list = ExecutionList(dynamic_prompt)
             for node_id in list(execute_outputs):
                 execution_list.add_node(node_id)
 
             while not execution_list.is_empty():
                 node_id = execution_list.stage_node_execution()
-                result, error, ex = non_recursive_execute(self.server, dynamic_prompt, self.outputs, node_id, extra_data, executed, prompt_id, self.outputs_ui, self.object_storage, execution_list, pending_subgraph_results)
-                if result == ExecutionResult.FAILURE:
-                    self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
-                    break
-                elif result == ExecutionResult.SLEEPING:
+                result, error, ex = non_recursive_execute(self.server, dynamic_prompt, self.outputs, node_id, extra_data, executed, prompt_id, self.outputs_ui, self.object_storage, execution_list, pending_subgraph_results, self.old_prompt)
+                if result == ExecutionResult.SLEEPING_LAZY:
                     execution_list.unstage_node_execution()
-                else: # result == ExecutionResult.SUCCESS
+                elif result == ExecutionResult.SUCCESS_RESOLVED_SUBGRAPH:
                     execution_list.complete_node_execution()
+                elif result == ExecutionResult.SUCCESS_CACHED:
+                    execution_list.complete_node_execution()
+                    # Copy any children from the old dynamic prompt to the new one so we have access to the input for caching
+                    dynamic_prompt.copy_descendants(self.old_prompt, node_id)
+                else:
+                    remove_stale_cache_entries(dynamic_prompt, self.old_prompt, self.outputs, self.object_storage, dirty_set, parent_id=node_id)
+                    if result == ExecutionResult.FAILURE:
+                        self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
+                        break
+                    elif result == ExecutionResult.SLEEPING_SUBGRAPH:
+                        execution_list.unstage_node_execution()
+                    elif result == ExecutionResult.SUCCESS_EXECUTED:
+                        execution_list.complete_node_execution()
+                    else:
+                        raise Exception("Unknown execution result")
 
-            for x in executed:
-                if x in prompt:
-                    self.old_prompt[x] = copy.deepcopy(prompt[x])
+            self.old_prompt = dynamic_prompt
             self.server.last_node_id = None
 
 

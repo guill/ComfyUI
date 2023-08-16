@@ -1,5 +1,7 @@
 from comfy.graph_utils import GraphBuilder
 import torch
+from nodes import PreviewImage
+import extension_points
 
 class AccumulateNode:
     def __init__(self):
@@ -374,6 +376,62 @@ class MakeListNode:
                 result.append(kwargs["value%d" % i])
         return (result,)
 
+class PreviewImageInLoop(PreviewImage):
+    def __init__(self):
+        super().__init__()
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "preview_image_in_loop"
+
+    OUTPUT_NODE = True
+
+    CATEGORY = "InversionDemo Nodes/Debug"
+
+    def preview_image_in_loop(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
+        result = self.save_images(images, filename_prefix, prompt, extra_pnginfo)
+        result["result"] = (images,)
+        return result
+
+# NOTE - In actuality, we would probably want to use the "ui" output type instead of creating a custom one
+# for this. This just serves as an example that can be tested using the default UI.
+class PrintDebugTextOutput(extension_points.CustomOutputSendToClient):
+    def __init__(self):
+        super().__init__("print_debug_text")
+
+    def merge_list_results(self, results):
+        return "\n".join(results)
+
+    def accumulate_results_as_display(self, prev_results, new_results):
+        if prev_results is None:
+            return new_results
+        return prev_results + "\n" + new_results
+
+class PrintDebugTextNode:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text": ("STRING", {"forceInput": True}),
+            },
+        }
+
+    RETURN_TYPES = tuple()
+    FUNCTION = "print_debug_text"
+    OUTPUT_NODE = True
+
+    CATEGORY = "InversionDemo Nodes/Debug"
+
+    def print_debug_text(self, text):
+        return {
+            "print_debug_text": text,
+        }
+
+extension_points.register_custom_output(PrintDebugTextOutput())
+extension_points.register_node(PrintDebugTextNode, "PrintDebugText", "Print Debug Text")
+
 UTILITY_NODE_CLASS_MAPPINGS = {
     "AccumulateNode": AccumulateNode,
     "AccumulationHeadNode": AccumulationHeadNode,
@@ -388,6 +446,7 @@ UTILITY_NODE_CLASS_MAPPINGS = {
     "IntMathOperation": IntMathOperation,
     "DebugPrint": DebugPrint,
     "MakeListNode": MakeListNode,
+    "PreviewImageInLoop": PreviewImageInLoop,
 }
 UTILITY_NODE_DISPLAY_NAME_MAPPINGS = {
     "AccumulateNode": "Accumulate",
@@ -403,4 +462,5 @@ UTILITY_NODE_DISPLAY_NAME_MAPPINGS = {
     "IntMathOperation": "Int Math Operation",
     "DebugPrint": "Debug Print",
     "MakeListNode": "Make List",
+    "PreviewImageInLoop": "Preview Image In Loop",
 }

@@ -1,9 +1,7 @@
+import { api } from "/scripts/api.js";
 import { app } from "/scripts/app.js";
 import { ComfyDialog, $el } from "/scripts/ui.js";
 import {ComfyWidgets} from "../../scripts/widgets.js";
-
-var update_comfyui_button = null;
-var fetch_updates_button = null;
 
 const fileInput = $el("input", {
 	id: "component-file-input",
@@ -19,6 +17,29 @@ const fileInput = $el("input", {
 			};
 			reader.readAsText(fileInput.files[0]);
 	},
+});
+
+api.addEventListener("custom_output.print_debug_text", ({ detail }) => {
+	const node = app.graph.getNodeById(detail.node);
+	if (node) {
+		if (node.widgets) {
+			const pos = node.widgets.findIndex((w) => w.name === "print_debug_text");
+			if (pos !== -1) {
+				for (let i = pos; i < node.widgets.length; i++) {
+					node.widgets[i].onRemove?.();
+				}
+				node.widgets.length = pos;
+			}
+		}
+
+		let text = detail.value;
+		const w = ComfyWidgets["STRING"](node, "print_debug_text", ["STRING", { multiline: true }], app).widget;
+		w.inputEl.readOnly = true;
+		w.inputEl.style.opacity = 0.6;
+		w.value = text;
+
+		node.onResize?.(node.size);
+	}
 });
 
 app.registerExtension({
@@ -60,5 +81,5 @@ app.registerExtension({
 		};
 		menu.append(saveButton);
 		menu.append(loadButton);
-	}
+	},
 });

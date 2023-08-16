@@ -2,6 +2,7 @@ import os
 import importlib.util
 import folder_paths
 import time
+import copy
 
 def execute_prestartup_script():
     def execute_script(script_path):
@@ -70,6 +71,7 @@ import execution
 import server
 from server import BinaryEventTypes
 from nodes import init_custom_nodes
+import extension_points
 import comfy.model_management
 
 def prompt_worker(q, server):
@@ -79,7 +81,7 @@ def prompt_worker(q, server):
         execution_start_time = time.perf_counter()
         prompt_id = item[1]
         e.execute(item[2], prompt_id, item[3], item[4])
-        q.task_done(item_id, e.outputs_ui)
+        q.task_done(item_id, e.custom_outputs)
         if server.client_id is not None:
             server.send_sync("executing", { "node": None, "prompt_id": prompt_id }, server.client_id)
 
@@ -125,6 +127,16 @@ def load_extra_path_config(yaml_path):
                 print("Adding extra search path", x, full_path)
                 folder_paths.add_model_folder_path(x, full_path)
 
+class UIOutput(extension_points.CustomOutput):
+    def __init__(self):
+        super().__init__("ui")
+        self.include_in_executed = True
+        self.include_in_history = True
+        self.override_client_key = "output"
+        self.override_history_key = "outputs"
+
+    def accumulate_results_as_display(self, prev_results, new_results):
+        return extension_points.deep_merge(prev_results, new_results)
 
 if __name__ == "__main__":
     if args.temp_directory:
@@ -147,6 +159,7 @@ if __name__ == "__main__":
             load_extra_path_config(config_path)
 
     init_custom_nodes()
+    extension_points.register_custom_output(UIOutput())
     server.add_routes()
     hijack_progress(server)
 

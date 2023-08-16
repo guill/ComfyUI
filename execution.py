@@ -15,6 +15,7 @@ import nodes
 import comfy.model_management
 import comfy.graph_utils
 from comfy.graph_utils import is_link, ExecutionBlocker, GraphBuilder
+import extension_points
 
 class ExecutionResult(Enum):
     SUCCESS = 0
@@ -179,7 +180,7 @@ class DynamicPrompt:
             node_id = self.ephemeral_display[node_id]
         return node_id
 
-def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, dynprompt=None, extra_data={}):
+def get_input_data(inputs, class_def, context, outputs={}):
     valid_inputs = class_def.INPUT_TYPES()
     input_data_all = {}
     for x in inputs:
@@ -199,14 +200,17 @@ def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, dynpromp
         h = valid_inputs["hidden"]
         for x in h:
             if h[x] == "PROMPT":
-                input_data_all[x] = [prompt]
-            if h[x] == "DYNPROMPT":
-                input_data_all[x] = [dynprompt]
-            if h[x] == "EXTRA_PNGINFO":
-                if "extra_pnginfo" in extra_data:
-                    input_data_all[x] = [extra_data['extra_pnginfo']]
-            if h[x] == "UNIQUE_ID":
-                input_data_all[x] = [unique_id]
+                input_data_all[x] = [context.get_raw_prompt()]
+            elif h[x] == "DYNPROMPT":
+                input_data_all[x] = [context.get_dynamic_prompt()]
+            elif h[x] == "EXTRA_PNGINFO":
+                extra_png_info = context.get_png_info()
+                if extra_png_info is not None:
+                    input_data_all[x] = [extra_png_info]
+            elif h[x] == "UNIQUE_ID":
+                input_data_all[x] = [context.get_current_node()]
+            elif h[x] == "CONTEXT":
+                input_data_all[x] = [context]
     return input_data_all
 
 def map_node_over_list(obj, input_data_all, func, allow_interrupt=False, execution_block_cb=None, pre_execute_cb=None):
@@ -284,15 +288,18 @@ def merge_result_data(results, obj):
 def get_output_data(obj, input_data_all, execution_block_cb=None, pre_execute_cb=None):
     
     results = []
-    uis = []
+    raw_custom_outputs = {}
     subgraph_results = []
     return_values = map_node_over_list(obj, input_data_all, obj.FUNCTION, allow_interrupt=True, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
     has_subgraph = False
     for i in range(len(return_values)):
         r = return_values[i]
         if isinstance(r, dict):
-            if 'ui' in r:
-                uis.append(r['ui'])
+            for key in extension_points.get_custom_outputs():
+                if key in r:
+                    if key not in raw_custom_outputs:
+                        raw_custom_outputs[key] = []
+                    raw_custom_outputs[key].append(r[key])
             if 'expand' in r:
                 # Perform an expansion, but do not append results
                 has_subgraph = True
@@ -318,10 +325,11 @@ def get_output_data(obj, input_data_all, execution_block_cb=None, pre_execute_cb
         output = merge_result_data(results, obj)
     else:
         output = []
-    ui = dict()    
-    if len(uis) > 0:
-        ui = {k: [y for x in uis for y in x[k]] for k in uis[0].keys()}
-    return output, ui, has_subgraph
+    custom_outputs = {}
+    for key, value in raw_custom_outputs.items():
+        custom_output = extension_points.get_custom_output(key)
+        custom_outputs[key] = custom_output.merge_list_results(value)
+    return output, custom_outputs, has_subgraph
 
 def format_value(x):
     if x is None:
@@ -331,7 +339,7 @@ def format_value(x):
     else:
         return str(x)
 
-def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, object_storage, execution_list, pending_subgraph_results):
+def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, executed, prompt_id, custom_outputs, object_storage, execution_list, pending_subgraph_results):
     unique_id = current_item
     real_node_id = dynprompt.get_real_node_id(unique_id)
     display_node_id = dynprompt.get_display_node_id(unique_id)
@@ -362,10 +370,11 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                             resolved_output.append(r)
                     resolved_outputs.append(tuple(resolved_output))
             output_data = merge_result_data(resolved_outputs, class_def)
-            output_ui = []
+            custom_node_outputs = custom_outputs.get(unique_id, {})
             has_subgraph = False
         else:
-            input_data_all = get_input_data(inputs, class_def, unique_id, outputs, dynprompt.original_prompt, dynprompt, extra_data)
+            context = extension_points.InputContext(unique_id, dynprompt=dynprompt, extra_data=extra_data, custom_outputs=custom_outputs)
+            input_data_all = get_input_data(inputs, class_def, context, outputs)
             if server.client_id is not None:
                 server.last_node_id = display_node_id
                 server.send_sync("executing", { "node": display_node_id, "prompt_id": prompt_id }, server.client_id)
@@ -404,11 +413,8 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                     return block
             def pre_execute_cb(call_index):
                 GraphBuilder.set_default_prefix(unique_id, call_index, 0)
-            output_data, output_ui, has_subgraph = get_output_data(obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
-        if len(output_ui) > 0:
-            outputs_ui[unique_id] = output_ui
-            if server.client_id is not None:
-                server.send_sync("executed", { "node": display_node_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
+            output_data, custom_node_outputs, has_subgraph = get_output_data(obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
+            custom_outputs[unique_id] = custom_node_outputs
         if has_subgraph:
             cached_outputs = []
             for i in range(len(output_data)):
@@ -492,7 +498,8 @@ def recursive_output_delete_if_changed(prompt, old_prompt, outputs, current_item
         if unique_id in old_prompt and 'is_changed' in old_prompt[unique_id]:
             is_changed_old = old_prompt[unique_id]['is_changed']
         if 'is_changed' not in prompt[unique_id]:
-            input_data_all = get_input_data(inputs, class_def, unique_id, outputs)
+            context = extension_points.InputContext(unique_id, raw_prompt=prompt)
+            input_data_all = get_input_data(inputs, class_def, context, outputs)
             if input_data_all is not None:
                 try:
                     #is_changed = class_def.IS_CHANGED(**input_data_all)
@@ -536,7 +543,7 @@ class PromptExecutor:
     def __init__(self, server):
         self.outputs = {}
         self.object_storage = {}
-        self.outputs_ui = {}
+        self.custom_outputs = {}
         self.old_prompt = {}
         self.server = server
 
@@ -618,9 +625,15 @@ class PromptExecutor:
                 recursive_output_delete_if_changed(prompt, self.old_prompt, self.outputs, x)
 
             current_outputs = set(self.outputs.keys())
-            for x in list(self.outputs_ui.keys()):
-                if x not in current_outputs:
-                    d = self.outputs_ui.pop(x)
+            for x in list(self.custom_outputs.keys()):
+                if x in current_outputs:
+                    cached_outputs = self.custom_outputs[x]
+                    for key, value in cached_outputs.items():
+                        custom_output = extension_points.get_custom_output(key)
+                        if custom_output is not None:
+                            custom_output.on_cached_value_used(self.server, prompt_id, x, value)
+                else:
+                    d = self.custom_outputs.pop(x)
                     del d
 
             if self.server.client_id is not None:
@@ -634,7 +647,7 @@ class PromptExecutor:
 
             while not execution_list.is_empty():
                 node_id = execution_list.stage_node_execution()
-                result, error, ex = non_recursive_execute(self.server, dynamic_prompt, self.outputs, node_id, extra_data, executed, prompt_id, self.outputs_ui, self.object_storage, execution_list, pending_subgraph_results)
+                result, error, ex = non_recursive_execute(self.server, dynamic_prompt, self.outputs, node_id, extra_data, executed, prompt_id, self.custom_outputs, self.object_storage, execution_list, pending_subgraph_results)
                 if result == ExecutionResult.FAILURE:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
                     break
@@ -642,6 +655,41 @@ class PromptExecutor:
                     execution_list.unstage_node_execution()
                 else: # result == ExecutionResult.SUCCESS
                     execution_list.complete_node_execution()
+                    real_node_id = dynamic_prompt.get_real_node_id(node_id)
+                    parent_node_id = dynamic_prompt.get_parent_node_id(node_id)
+                    display_node_id = dynamic_prompt.get_display_node_id(node_id)
+                    # TODO - Code cleanup
+                    if node_id in self.custom_outputs:
+                        for key in self.custom_outputs[node_id]:
+                            custom_output = extension_points.get_custom_output(key)
+                            if real_node_id is not None and real_node_id != node_id:
+                                assert real_node_id in self.custom_outputs
+                                self.custom_outputs[real_node_id][key] = custom_output.accumulate_results_as_real(self.custom_outputs[real_node_id].get(key, None), self.custom_outputs[node_id][key])
+                                if custom_output is not None:
+                                    custom_output.on_value_updated(self.server, prompt_id, real_node_id, self.custom_outputs[real_node_id][key])
+                            if parent_node_id is not None and parent_node_id != node_id:
+                                assert parent_node_id in self.custom_outputs
+                                self.custom_outputs[parent_node_id][key] = custom_output.accumulate_results_as_parent(self.custom_outputs[parent_node_id].get(key, None), self.custom_outputs[node_id][key])
+                                if custom_output is not None:
+                                    custom_output.on_value_updated(self.server, prompt_id, parent_node_id, self.custom_outputs[parent_node_id][key])
+                            if display_node_id is not None and display_node_id != node_id:
+                                assert display_node_id in self.custom_outputs
+                                self.custom_outputs[display_node_id][key] = custom_output.accumulate_results_as_display(self.custom_outputs[display_node_id].get(key, None), self.custom_outputs[node_id][key])
+                                if custom_output is not None:
+                                    custom_output.on_value_updated(self.server, prompt_id, display_node_id, self.custom_outputs[display_node_id][key])
+                    custom_node_outputs = self.custom_outputs.get(node_id, {})
+                    for key in custom_node_outputs.keys():
+                        custom_output = extension_points.get_custom_output(key)
+                        if custom_output is not None:
+                            custom_output.on_value_updated(self.server, prompt_id, node_id, custom_node_outputs[key])
+                    if self.server.client_id is not None:
+                        result_message = { "node": display_node_id, "prompt_id": prompt_id }
+                        custom_node_outputs = self.custom_outputs.get(display_node_id, {})
+                        for key in custom_node_outputs.keys():
+                            custom_output = extension_points.get_custom_output(key)
+                            if custom_output is not None and custom_output.include_in_executed:
+                                result_message[custom_output.override_client_key] = custom_node_outputs[key]
+                        self.server.send_sync("executed", result_message, self.server.client_id)
 
             for x in executed:
                 if x in prompt:
@@ -798,7 +846,8 @@ def validate_inputs(prompt, item, validated):
                 continue
 
             if hasattr(obj_class, "VALIDATE_INPUTS"):
-                input_data_all = get_input_data(inputs, obj_class, unique_id)
+                context = extension_points.InputContext(unique_id, raw_prompt=prompt)
+                input_data_all = get_input_data(inputs, obj_class, context)
                 #ret = obj_class.VALIDATE_INPUTS(**input_data_all)
                 ret = map_node_over_list(obj_class, input_data_all, "VALIDATE_INPUTS")
                 for i, r in enumerate(ret):
@@ -978,12 +1027,17 @@ class PromptQueue:
             self.server.queue_updated()
             return (item, i)
 
-    def task_done(self, item_id, outputs):
+    def task_done(self, item_id, custom_outputs):
         with self.mutex:
             prompt = self.currently_running.pop(item_id)
-            self.history[prompt[1]] = { "prompt": prompt, "outputs": {} }
-            for o in outputs:
-                self.history[prompt[1]]["outputs"][o] = outputs[o]
+            self.history[prompt[1]] = { "prompt": prompt }
+            for key in extension_points.get_custom_outputs():
+                custom_output = extension_points.get_custom_output(key)
+                if custom_output.include_in_history:
+                    self.history[prompt[1]][custom_output.override_history_key] = {}
+                    for o in custom_outputs:
+                        if key in custom_outputs[o]:
+                            self.history[prompt[1]][custom_output.override_history_key][o] = custom_outputs[o][key]
             self.server.queue_updated()
 
     def get_current_queue(self):

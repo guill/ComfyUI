@@ -7,6 +7,7 @@ import heapq
 import traceback
 import gc
 import time
+import itertools
 from enum import Enum
 
 import torch
@@ -247,17 +248,22 @@ def is_hashable(obj):
     except:
         return False
 
+class Unhashable:
+    def __init__(self):
+        self.value = float("NaN")
+
 def to_hashable(obj):
     # So that we don't infinitely recurse since frozenset and tuples
     # are Sequences.
-    if is_hashable(obj):
+    if isinstance(obj, (int, float, str, bool, type(None))):
         return obj
     elif isinstance(obj, Mapping):
         return frozenset([(to_hashable(k), to_hashable(v)) for k, v in sorted(obj.items())])
     elif isinstance(obj, Sequence):
-        return frozenset([to_hashable(i) for i in obj])
+        return frozenset(zip(itertools.count(), [to_hashable(i) for i in obj]))
     else:
-        return float("NaN")
+        # TODO - Support other objects like tensors?
+        return Unhashable()
 
 class CacheKeySetID(CacheKeySet):
     def __init__(self, dynprompt, node_ids, is_changed_cache):

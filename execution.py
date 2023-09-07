@@ -620,7 +620,7 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
             input_data_all = get_input_data(inputs, class_def, unique_id, outputs, dynprompt.original_prompt, dynprompt, extra_data)
             if server.client_id is not None:
                 server.last_node_id = display_node_id
-                server.send_sync("executing", { "node": display_node_id, "prompt_id": prompt_id }, server.client_id)
+                server.send_sync("executing", { "node": unique_id, "display_node": display_node_id, "prompt_id": prompt_id }, server.client_id)
 
             obj = object_storage.get(unique_id)
             if obj is None:
@@ -661,7 +661,7 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
             ui_cache = outputs_ui.get_cache_for(unique_id)
             ui_cache.set(unique_id, output_ui)
             if server.client_id is not None:
-                server.send_sync("executed", { "node": display_node_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
+                server.send_sync("executed", { "node": unique_id, "display_node": display_node_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
         if has_subgraph:
             cached_outputs = []
             new_node_ids = []
@@ -823,7 +823,10 @@ class PromptExecutor:
                 else: # result == ExecutionResult.SUCCESS:
                     execution_list.complete_node_execution()
 
-            self.outputs_ui = { node_id: self.cached_ui.get(node_id) for node_id in self.cached_ui.all_node_ids() }
+            self.history_result = {
+                "outputs": { node_id: self.cached_ui.get_cache_for(node_id).get(node_id) for node_id in self.cached_ui.all_node_ids() }
+                # TODO - Include information about display_id and parent mappings
+            }
             self.server.last_node_id = None
 
 
@@ -1156,12 +1159,11 @@ class PromptQueue:
             self.server.queue_updated()
             return (item, i)
 
-    def task_done(self, item_id, outputs):
+    def task_done(self, item_id, history_result):
         with self.mutex:
             prompt = self.currently_running.pop(item_id)
             self.history[prompt[1]] = { "prompt": prompt, "outputs": {} }
-            for o in outputs:
-                self.history[prompt[1]]["outputs"][o] = outputs[o]
+            self.history[prompt[1]].update(history_result)
             self.server.queue_updated()
 
     def get_current_queue(self):

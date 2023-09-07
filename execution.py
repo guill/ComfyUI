@@ -599,6 +599,7 @@ def non_recursive_execute(server, dynprompt, caches, current_item, extra_data, e
     unique_id = current_item
     real_node_id = dynprompt.get_real_node_id(unique_id)
     display_node_id = dynprompt.get_display_node_id(unique_id)
+    parent_node_id = dynprompt.get_parent_node_id(unique_id)
     inputs = dynprompt.get_node(unique_id)['inputs']
     class_type = dynprompt.get_node(unique_id)['class_type']
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
@@ -673,7 +674,14 @@ def non_recursive_execute(server, dynprompt, caches, current_item, extra_data, e
                 GraphBuilder.set_default_prefix(unique_id, call_index, 0)
             output_data, output_ui, has_subgraph = get_output_data(obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
         if len(output_ui) > 0:
-            caches.ui.set(unique_id, output_ui)
+            caches.ui.set(unique_id, {
+                "meta": {
+                    "display_node": display_node_id,
+                    "parent_node": parent_node_id,
+                    "real_node_id": real_node_id,
+                },
+                "output": output_ui
+            })
             if server.client_id is not None:
                 server.send_sync("executed", { "node": unique_id, "display_node": display_node_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
         if has_subgraph:
@@ -832,9 +840,16 @@ class PromptExecutor:
                 else: # result == ExecutionResult.SUCCESS:
                     execution_list.complete_node_execution()
 
+            ui_outputs = {}
+            meta_outputs = {}
+            for node_id in self.caches.ui.all_node_ids():
+                ui_info = self.caches.ui.get(node_id)
+                if ui_info is not None:
+                    ui_outputs[node_id] = ui_info["output"]
+                    meta_outputs[node_id] = ui_info["meta"]
             self.history_result = {
-                "outputs": { node_id: self.caches.ui.get(node_id) for node_id in self.caches.ui.all_node_ids() }
-                # TODO - Include information about display_id and parent mappings
+                "outputs": ui_outputs,
+                "meta": meta_outputs,
             }
             self.server.last_node_id = None
 

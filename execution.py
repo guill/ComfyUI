@@ -433,6 +433,13 @@ class HierarchicalCache(BasicCache):
         assert cache is not None
         return cache.ensure_subcache(node_id, children_ids)
 
+class CacheSet:
+    def __init__(self):
+        self.outputs = HierarchicalCache(CacheKeySetInputSignature)
+        self.ui = HierarchicalCache(CacheKeySetInputSignature)
+        self.objects = HierarchicalCache(CacheKeySetID)
+        self.all = [self.outputs, self.ui, self.objects]
+
 def get_input_data(inputs, class_def, unique_id, outputs=None, prompt={}, dynprompt=None, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
     input_data_all = {}
@@ -588,14 +595,14 @@ def format_value(x):
     else:
         return str(x)
 
-def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, executed, prompt_id, outputs_ui, object_storage, execution_list, pending_subgraph_results):
+def non_recursive_execute(server, dynprompt, caches, current_item, extra_data, executed, prompt_id, execution_list, pending_subgraph_results):
     unique_id = current_item
     real_node_id = dynprompt.get_real_node_id(unique_id)
     display_node_id = dynprompt.get_display_node_id(unique_id)
     inputs = dynprompt.get_node(unique_id)['inputs']
     class_type = dynprompt.get_node(unique_id)['class_type']
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
-    if outputs.get(unique_id) is not None:
+    if caches.outputs.get(unique_id) is not None:
         print("--> Node {}: Using cached output".format(unique_id))
         return (ExecutionResult.SUCCESS, None, None)
 
@@ -613,7 +620,7 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                     for r in result:
                         if is_link(r):
                             source_node, source_output = r[0], r[1]
-                            node_output = outputs.get(source_node)[source_output]
+                            node_output = caches.outputs.get(source_node)[source_output]
                             for o in node_output:
                                 resolved_output.append(o)
 
@@ -625,15 +632,15 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
             has_subgraph = False
         else:
             print("--> Node {}: Executing".format(unique_id))
-            input_data_all = get_input_data(inputs, class_def, unique_id, outputs, dynprompt.original_prompt, dynprompt, extra_data)
+            input_data_all = get_input_data(inputs, class_def, unique_id, caches.outputs, dynprompt.original_prompt, dynprompt, extra_data)
             if server.client_id is not None:
                 server.last_node_id = display_node_id
                 server.send_sync("executing", { "node": unique_id, "display_node": display_node_id, "prompt_id": prompt_id }, server.client_id)
 
-            obj = object_storage.get(unique_id)
+            obj = caches.objects.get(unique_id)
             if obj is None:
                 obj = class_def()
-                object_storage.set(unique_id, obj)
+                caches.objects.set(unique_id, obj)
 
             if hasattr(obj, "check_lazy_status"):
                 required_inputs = map_node_over_list(obj, input_data_all, "check_lazy_status", allow_interrupt=True)
@@ -666,7 +673,7 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                 GraphBuilder.set_default_prefix(unique_id, call_index, 0)
             output_data, output_ui, has_subgraph = get_output_data(obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
         if len(output_ui) > 0:
-            outputs_ui.set(unique_id, output_ui)
+            caches.ui.set(unique_id, output_ui)
             if server.client_id is not None:
                 server.send_sync("executed", { "node": unique_id, "display_node": display_node_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
         if has_subgraph:
@@ -699,16 +706,15 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
                             new_output_links.append((from_node_id, from_socket))
                     cached_outputs.append((True, node_outputs))
             new_node_ids = set(new_node_ids)
-            outputs.ensure_subcache_for(unique_id, new_node_ids).clean_unused()
-            outputs_ui.ensure_subcache_for(unique_id, new_node_ids).clean_unused()
-            object_storage.ensure_subcache_for(unique_id, new_node_ids).clean_unused()
+            for cache in caches.all:
+                cache.ensure_subcache_for(unique_id, new_node_ids).clean_unused()
             for node_id in new_output_ids:
                 execution_list.add_node(node_id)
             for link in new_output_links:
                 execution_list.add_strong_link(link[0], link[1], unique_id)
             pending_subgraph_results[unique_id] = cached_outputs
             return (ExecutionResult.SLEEPING, None, None)
-        outputs.set(unique_id, output_data)
+        caches.outputs.set(unique_id, output_data)
     except comfy.model_management.InterruptProcessingException as iex:
         print("Processing interrupted")
 
@@ -751,9 +757,7 @@ def non_recursive_execute(server, dynprompt, outputs, current_item, extra_data, 
 
 class PromptExecutor:
     def __init__(self, server):
-        self.cached_outputs = HierarchicalCache(CacheKeySetInputSignature)
-        self.cached_ui = HierarchicalCache(CacheKeySetInputSignature)
-        self.cached_objects = HierarchicalCache(CacheKeySetID)
+        self.caches = CacheSet()
         self.server = server
 
     def handle_execution_error(self, prompt_id, prompt, current_outputs, executed, error, ex):
@@ -801,29 +805,25 @@ class PromptExecutor:
             #delete cached outputs if nodes don't exist for them
 
             dynamic_prompt = DynamicPrompt(prompt)
-            is_changed_cache = IsChangedCache(dynamic_prompt, self.cached_outputs)
-            self.cached_outputs.set_prompt(dynamic_prompt, prompt.keys(), is_changed_cache)
-            self.cached_ui.set_prompt(dynamic_prompt, prompt.keys(), is_changed_cache)
-            self.cached_objects.set_prompt(dynamic_prompt, prompt.keys(), is_changed_cache)
+            is_changed_cache = IsChangedCache(dynamic_prompt, self.caches.outputs)
+            for cache in self.caches.all:
+                cache.set_prompt(dynamic_prompt, prompt.keys(), is_changed_cache)
+                cache.clean_unused()
 
-            self.cached_outputs.clean_unused()
-            self.cached_ui.clean_unused()
-            self.cached_objects.clean_unused()
-
-            current_outputs = self.cached_outputs.all_node_ids()
+            current_outputs = self.caches.outputs.all_node_ids()
 
             comfy.model_management.cleanup_models()
             if self.server.client_id is not None:
                 self.server.send_sync("execution_cached", { "nodes": list(current_outputs) , "prompt_id": prompt_id}, self.server.client_id)
             pending_subgraph_results = {}
             executed = set()
-            execution_list = ExecutionList(dynamic_prompt, self.cached_outputs)
+            execution_list = ExecutionList(dynamic_prompt, self.caches.outputs)
             for node_id in list(execute_outputs):
                 execution_list.add_node(node_id)
 
             while not execution_list.is_empty():
                 node_id = execution_list.stage_node_execution()
-                result, error, ex = non_recursive_execute(self.server, dynamic_prompt, self.cached_outputs, node_id, extra_data, executed, prompt_id, self.cached_ui, self.cached_objects, execution_list, pending_subgraph_results)
+                result, error, ex = non_recursive_execute(self.server, dynamic_prompt, self.caches, node_id, extra_data, executed, prompt_id, execution_list, pending_subgraph_results)
                 if result == ExecutionResult.FAILURE:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
                     break
@@ -833,7 +833,7 @@ class PromptExecutor:
                     execution_list.complete_node_execution()
 
             self.history_result = {
-                "outputs": { node_id: self.cached_ui.get(node_id) for node_id in self.cached_ui.all_node_ids() }
+                "outputs": { node_id: self.caches.ui.get(node_id) for node_id in self.caches.ui.all_node_ids() }
                 # TODO - Include information about display_id and parent mappings
             }
             self.server.last_node_id = None

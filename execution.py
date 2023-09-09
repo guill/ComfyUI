@@ -203,7 +203,7 @@ class IsChangedCache:
                 if "is_changed" in node:
                     self.is_changed[node_id] = node["is_changed"]
                 else:
-                    input_data_all = get_input_data(node["inputs"], class_def, node_id, outputs_cache)
+                    input_data_all = get_input_data(node["inputs"], class_def, node_id, self.outputs_cache)
                     try:
                         is_changed = map_node_over_list(class_def, input_data_all, "IS_CHANGED")
                         node["is_changed"] = [None if isinstance(x, ExecutionBlocker) else x for x in is_changed]

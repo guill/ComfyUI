@@ -50,9 +50,13 @@ class IsChangedCache:
         return self.is_changed[node_id]
 
 class CacheSet:
-    def __init__(self):
-        # self.init_lru_cache(1000)
-        self.init_classic_cache() 
+    def __init__(self, lru_size=None):
+        if lru_size is None or lru_size == 0:
+            print("Using classic caching")
+            self.init_classic_cache() 
+        else:
+            print("Using LRU caching with size:", lru_size)
+            self.init_lru_cache(lru_size)
         self.all = [self.outputs, self.ui, self.objects]
 
     # Useful for those with ample RAM/VRAM -- allows experimenting without
@@ -395,8 +399,8 @@ def non_recursive_execute(server, dynprompt, caches, current_item, extra_data, e
     return (ExecutionResult.SUCCESS, None, None)
 
 class PromptExecutor:
-    def __init__(self, server):
-        self.caches = CacheSet()
+    def __init__(self, server, lru_size=None):
+        self.caches = CacheSet(lru_size)
         self.server = server
 
     def handle_execution_error(self, prompt_id, prompt, current_outputs, executed, error, ex):

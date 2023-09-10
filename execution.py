@@ -241,15 +241,6 @@ class CacheKeySet:
         else:
             return None
 
-# Since typing.Hashable doesn't check recursively you actually
-# have to try hashing it.
-def is_hashable(obj):
-    try:
-        hash(obj)
-        return True
-    except:
-        return False
-
 class Unhashable:
     def __init__(self):
         self.value = float("NaN")

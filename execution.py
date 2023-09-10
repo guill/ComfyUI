@@ -207,8 +207,10 @@ class IsChangedCache:
                     try:
                         is_changed = map_node_over_list(class_def, input_data_all, "IS_CHANGED")
                         node["is_changed"] = [None if isinstance(x, ExecutionBlocker) else x for x in is_changed]
+                        self.is_changed[node_id] = node["is_changed"]
                     except:
                         node["is_changed"] = float("NaN")
+                        self.is_changed[node_id] = node["is_changed"]
             else:
                 self.is_changed[node_id] = False
         return self.is_changed[node_id]

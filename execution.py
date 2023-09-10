@@ -6,7 +6,6 @@ import threading
 import heapq
 import traceback
 import gc
-import itertools
 from enum import Enum
 
 import torch
@@ -16,8 +15,7 @@ import comfy.model_management
 import comfy.graph_utils
 from comfy.graph import get_input_info, ExecutionList, DynamicPrompt
 from comfy.graph_utils import is_link, ExecutionBlocker, GraphBuilder
-from comfy.caching import HierarchicalCache, CacheKeySetInputSignature, CacheKeySetID
-from typing import Sequence, Mapping
+from comfy.caching import HierarchicalCache, LRUCache, CacheKeySetInputSignature, CacheKeySetID
 
 class ExecutionResult(Enum):
     SUCCESS = 0
@@ -53,10 +51,22 @@ class IsChangedCache:
 
 class CacheSet:
     def __init__(self):
+        # self.init_lru_cache(1000)
+        self.init_classic_cache() 
+        self.all = [self.outputs, self.ui, self.objects]
+
+    # Useful for those with ample RAM/VRAM -- allows experimenting without
+    # blowing away the cache every time
+    def init_lru_cache(self, cache_size):
+        self.outputs = LRUCache(CacheKeySetInputSignature, max_size=cache_size)
+        self.ui = LRUCache(CacheKeySetInputSignature, max_size=cache_size)
+        self.objects = HierarchicalCache(CacheKeySetID)
+
+    # Performs like the old cache -- dump data ASAP
+    def init_classic_cache(self):
         self.outputs = HierarchicalCache(CacheKeySetInputSignature)
         self.ui = HierarchicalCache(CacheKeySetInputSignature)
         self.objects = HierarchicalCache(CacheKeySetID)
-        self.all = [self.outputs, self.ui, self.objects]
 
 def get_input_data(inputs, class_def, unique_id, outputs=None, prompt={}, dynprompt=None, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
@@ -222,6 +232,9 @@ def non_recursive_execute(server, dynprompt, caches, current_item, extra_data, e
     class_type = dynprompt.get_node(unique_id)['class_type']
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
     if caches.outputs.get(unique_id) is not None:
+        if server.client_id is not None:
+            cached_output = caches.ui.get(unique_id) or {}
+            server.send_sync("executed", { "node": unique_id, "display_node": display_node_id, "output": cached_output.get("output",None), "prompt_id": prompt_id }, server.client_id)
         print("--> Node {}: Using cached output".format(unique_id))
         return (ExecutionResult.SUCCESS, None, None)
 

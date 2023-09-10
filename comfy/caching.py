@@ -10,6 +10,9 @@ class CacheKeySet:
         self.keys = {}
         self.subcache_keys = {}
 
+    def add_keys(node_ids):
+        raise NotImplementedError()
+
     def all_node_ids(self):
         return set(self.keys.keys())
 
@@ -20,16 +23,10 @@ class CacheKeySet:
         return self.subcache_keys.values()
 
     def get_data_key(self, node_id):
-        if node_id in self.keys:
-            return self.keys[node_id]
-        else:
-            return None
+        return self.keys.get(node_id, None)
 
     def get_subcache_key(self, node_id):
-        if node_id in self.subcache_keys:
-            return self.subcache_keys[node_id]
-        else:
-            return None
+        return self.subcache_keys.get(node_id, None)
 
 class Unhashable:
     def __init__(self):
@@ -51,18 +48,30 @@ def to_hashable(obj):
 class CacheKeySetID(CacheKeySet):
     def __init__(self, dynprompt, node_ids, is_changed_cache):
         super().__init__(dynprompt, node_ids, is_changed_cache)
+        self.dynprompt = dynprompt
+        self.add_keys(node_ids)
+
+    def add_keys(self, node_ids):
         for node_id in node_ids:
-            node = dynprompt.get_node(node_id)
+            if node_id in self.keys:
+                continue
+            node = self.dynprompt.get_node(node_id)
             self.keys[node_id] = (node_id, node["class_type"])
             self.subcache_keys[node_id] = (node_id, node["class_type"])
 
 class CacheKeySetInputSignature(CacheKeySet):
     def __init__(self, dynprompt, node_ids, is_changed_cache):
         super().__init__(dynprompt, node_ids, is_changed_cache)
+        self.dynprompt = dynprompt
         self.is_changed_cache = is_changed_cache
+        self.add_keys(node_ids)
+
+    def add_keys(self, node_ids):
         for node_id in node_ids:
-            node = dynprompt.get_node(node_id)
-            self.keys[node_id] = self.get_node_signature(dynprompt, node_id)
+            if node_id in self.keys:
+                continue
+            node = self.dynprompt.get_node(node_id)
+            self.keys[node_id] = self.get_node_signature(self.dynprompt, node_id)
             self.subcache_keys[node_id] = (node_id, node["class_type"])
 
     def get_node_signature(self, dynprompt, node_id):
@@ -148,12 +157,12 @@ class BasicCache:
         for key in to_remove:
             del self.subcaches[key]
 
-    def set_immediate(self, node_id, value):
+    def _set_immediate(self, node_id, value):
         assert self.cache_key_set is not None
         cache_key = self.cache_key_set.get_data_key(node_id)
         self.cache[cache_key] = value
 
-    def get_immediate(self, node_id):
+    def _get_immediate(self, node_id):
         assert self.cache_key_set is not None
         cache_key = self.cache_key_set.get_data_key(node_id)
         if cache_key in self.cache:
@@ -161,7 +170,7 @@ class BasicCache:
         else:
             return None
 
-    def ensure_subcache(self, node_id, children_ids):
+    def _ensure_subcache(self, node_id, children_ids):
         assert self.cache_key_set is not None
         subcache_key = self.cache_key_set.get_subcache_key(node_id)
         subcache = self.subcaches.get(subcache_key, None)
@@ -171,7 +180,7 @@ class BasicCache:
         subcache.set_prompt(self.dynprompt, children_ids, self.is_changed_cache)
         return subcache
 
-    def get_subcache(self, node_id):
+    def _get_subcache(self, node_id):
         assert self.cache_key_set is not None
         subcache_key = self.cache_key_set.get_subcache_key(node_id)
         if subcache_key in self.subcaches:
@@ -183,7 +192,7 @@ class HierarchicalCache(BasicCache):
     def __init__(self, key_class):
         super().__init__(key_class)
 
-    def get_cache_for(self, node_id):
+    def _get_cache_for(self, node_id):
         parent_id = self.dynprompt.get_parent_node_id(node_id)
         if parent_id is None:
             return self
@@ -195,24 +204,68 @@ class HierarchicalCache(BasicCache):
 
         cache = self
         for parent_id in reversed(hierarchy):
-            cache = cache.get_subcache(parent_id)
+            cache = cache._get_subcache(parent_id)
             if cache is None:
                 return None
         return cache
 
     def get(self, node_id):
-        cache = self.get_cache_for(node_id)
+        cache = self._get_cache_for(node_id)
         if cache is None:
             return None
-        return cache.get_immediate(node_id)
+        return cache._get_immediate(node_id)
 
     def set(self, node_id, value):
-        cache = self.get_cache_for(node_id)
+        cache = self._get_cache_for(node_id)
         assert cache is not None
-        cache.set_immediate(node_id, value)
+        cache._set_immediate(node_id, value)
 
     def ensure_subcache_for(self, node_id, children_ids):
-        cache = self.get_cache_for(node_id)
+        cache = self._get_cache_for(node_id)
         assert cache is not None
-        return cache.ensure_subcache(node_id, children_ids)
+        return cache._ensure_subcache(node_id, children_ids)
 
+class LRUCache(BasicCache):
+    def __init__(self, key_class, max_size=100):
+        super().__init__(key_class)
+        self.max_size = max_size
+        self.min_generation = 0
+        self.generation = 0
+        self.used_generation = {}
+
+    def set_prompt(self, dynprompt, node_ids, is_changed_cache):
+        super().set_prompt(dynprompt, node_ids, is_changed_cache)
+        self.generation += 1
+        for node_id in node_ids:
+            self._mark_used(node_id)
+        print("LRUCache: Now at generation %d" % self.generation)
+
+    def clean_unused(self):
+        print("LRUCache: Cleaning unused. Current size: %d/%d" % (len(self.cache), self.max_size))
+        while len(self.cache) > self.max_size and self.min_generation < self.generation:
+            print("LRUCache: Evicting generation %d" % self.min_generation)
+            self.min_generation += 1
+            to_remove = [key for key in self.cache if self.used_generation[key] < self.min_generation]
+            for key in to_remove:
+                del self.cache[key]
+                del self.used_generation[key]
+
+    def get(self, node_id):
+        self._mark_used(node_id)
+        return self._get_immediate(node_id)
+
+    def _mark_used(self, node_id):
+        cache_key = self.cache_key_set.get_data_key(node_id)
+        if cache_key is not None:
+            self.used_generation[cache_key] = self.generation
+
+    def set(self, node_id, value):
+        self._mark_used(node_id)
+        return self._set_immediate(node_id, value)
+
+    def ensure_subcache_for(self, node_id, children_ids):
+        self.cache_key_set.add_keys(children_ids)
+        self._mark_used(node_id)
+        for child_id in children_ids:
+            self._mark_used(child_id)
+        return self

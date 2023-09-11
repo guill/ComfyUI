@@ -15,7 +15,7 @@ import comfy.model_management
 import comfy.graph_utils
 from comfy.graph import get_input_info, ExecutionList, DynamicPrompt
 from comfy.graph_utils import is_link, ExecutionBlocker, GraphBuilder
-from comfy.caching import HierarchicalCache, LRUCache, CacheKeySetInputSignature, CacheKeySetID
+from comfy.caching import HierarchicalCache, LRUCache, CacheKeySetInputSignature, CacheKeySetInputSignatureWithID, CacheKeySetID
 
 class ExecutionResult(Enum):
     SUCCESS = 0
@@ -63,13 +63,13 @@ class CacheSet:
     # blowing away the cache every time
     def init_lru_cache(self, cache_size):
         self.outputs = LRUCache(CacheKeySetInputSignature, max_size=cache_size)
-        self.ui = LRUCache(CacheKeySetInputSignature, max_size=cache_size)
+        self.ui = LRUCache(CacheKeySetInputSignatureWithID, max_size=cache_size)
         self.objects = HierarchicalCache(CacheKeySetID)
 
     # Performs like the old cache -- dump data ASAP
     def init_classic_cache(self):
         self.outputs = HierarchicalCache(CacheKeySetInputSignature)
-        self.ui = HierarchicalCache(CacheKeySetInputSignature)
+        self.ui = HierarchicalCache(CacheKeySetInputSignatureWithID)
         self.objects = HierarchicalCache(CacheKeySetID)
 
 def get_input_data(inputs, class_def, unique_id, outputs=None, prompt={}, dynprompt=None, extra_data={}):
@@ -311,6 +311,7 @@ def non_recursive_execute(server, dynprompt, caches, current_item, extra_data, e
         if len(output_ui) > 0:
             caches.ui.set(unique_id, {
                 "meta": {
+                    "node_id": unique_id,
                     "display_node": display_node_id,
                     "parent_node": parent_node_id,
                     "real_node_id": real_node_id,
@@ -445,8 +446,6 @@ class PromptExecutor:
             self.server.send_sync("execution_start", { "prompt_id": prompt_id}, self.server.client_id)
 
         with torch.inference_mode():
-            #delete cached outputs if nodes don't exist for them
-
             dynamic_prompt = DynamicPrompt(prompt)
             is_changed_cache = IsChangedCache(dynamic_prompt, self.caches.outputs)
             for cache in self.caches.all:
@@ -456,8 +455,6 @@ class PromptExecutor:
             current_outputs = self.caches.outputs.all_node_ids()
 
             comfy.model_management.cleanup_models()
-            if self.server.client_id is not None:
-                self.server.send_sync("execution_cached", { "nodes": list(current_outputs) , "prompt_id": prompt_id}, self.server.client_id)
             pending_subgraph_results = {}
             executed = set()
             execution_list = ExecutionList(dynamic_prompt, self.caches.outputs)
@@ -477,11 +474,10 @@ class PromptExecutor:
 
             ui_outputs = {}
             meta_outputs = {}
-            for node_id in self.caches.ui.all_node_ids():
-                ui_info = self.caches.ui.get(node_id)
-                if ui_info is not None:
-                    ui_outputs[node_id] = ui_info["output"]
-                    meta_outputs[node_id] = ui_info["meta"]
+            for ui_info in self.caches.ui.all_active_values():
+                node_id = ui_info["meta"]["node_id"]
+                ui_outputs[node_id] = ui_info["output"]
+                meta_outputs[node_id] = ui_info["meta"]
             self.history_result = {
                 "outputs": ui_outputs,
                 "meta": meta_outputs,

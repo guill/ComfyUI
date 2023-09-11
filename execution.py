@@ -455,6 +455,9 @@ class PromptExecutor:
             current_outputs = self.caches.outputs.all_node_ids()
 
             comfy.model_management.cleanup_models()
+            if self.server.client_id is not None:
+                self.server.send_sync("execution_cached", { "nodes": list(current_outputs) , "prompt_id": prompt_id}, self.server.client_id)
+
             pending_subgraph_results = {}
             executed = set()
             execution_list = ExecutionList(dynamic_prompt, self.caches.outputs)

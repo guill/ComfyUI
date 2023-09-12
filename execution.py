@@ -70,6 +70,13 @@ class CacheSet:
         self.ui = HierarchicalCache(CacheKeySetInputSignatureWithID)
         self.objects = HierarchicalCache(CacheKeySetID)
 
+    def recursive_debug_dump(self):
+        result = {
+            "outputs": self.outputs.recursive_debug_dump(),
+            "ui": self.ui.recursive_debug_dump(),
+        }
+        return result
+
 def get_input_data(inputs, class_def, unique_id, outputs=None, prompt={}, dynprompt=None, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
     input_data_all = {}
@@ -394,9 +401,15 @@ def non_recursive_execute(server, dynprompt, caches, current_item, extra_data, e
 
     return (ExecutionResult.SUCCESS, None, None)
 
+CACHE_FOR_DEBUG_DUMP = None
+def dump_cache_for_debug():
+    return CACHE_FOR_DEBUG_DUMP.recursive_debug_dump()
+
 class PromptExecutor:
     def __init__(self, server, lru_size=None):
         self.caches = CacheSet(lru_size)
+        global CACHE_FOR_DEBUG_DUMP
+        CACHE_FOR_DEBUG_DUMP = self.caches
         self.server = server
 
     def handle_execution_error(self, prompt_id, prompt, current_outputs, executed, error, ex):

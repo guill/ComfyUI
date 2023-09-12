@@ -442,6 +442,22 @@ class PromptServer():
             queue_info['queue_pending'] = current_queue[1]
             return web.json_response(queue_info)
 
+        @routes.get("/debugcache")
+        async def get_debugcache(request):
+            def custom_serialize(obj):
+                from comfy.caching import Unhashable
+                if isinstance(obj, frozenset):
+                    try:
+                        return dict(obj)
+                    except:
+                        return list(obj)
+                elif isinstance(obj, Unhashable):
+                    return "NaN"
+                return str(obj)
+            def custom_dump(obj):
+                return json.dumps(obj, default=custom_serialize)
+            return web.json_response(execution.dump_cache_for_debug(), dumps=custom_dump)
+
         @routes.post("/prompt")
         async def post_prompt(request):
             print("got prompt")

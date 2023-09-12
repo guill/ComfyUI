@@ -197,6 +197,14 @@ class BasicCache:
         else:
             return None
 
+    def recursive_debug_dump(self):
+        result = []
+        for key in self.cache:
+            result.append({"key": key, "value": self.cache[key]})
+        for key in self.subcaches:
+            result.append({"subcache_key": key, "subcache": self.subcaches[key].recursive_debug_dump()})
+        return result
+
 class HierarchicalCache(BasicCache):
     def __init__(self, key_class):
         super().__init__(key_class)

@@ -52,10 +52,8 @@ class IsChangedCache:
 class CacheSet:
     def __init__(self, lru_size=None):
         if lru_size is None or lru_size == 0:
-            print("Using classic caching")
             self.init_classic_cache() 
         else:
-            print("Using LRU caching with size:", lru_size)
             self.init_lru_cache(lru_size)
         self.all = [self.outputs, self.ui, self.objects]
 
@@ -239,13 +237,11 @@ def non_recursive_execute(server, dynprompt, caches, current_item, extra_data, e
         if server.client_id is not None:
             cached_output = caches.ui.get(unique_id) or {}
             server.send_sync("executed", { "node": unique_id, "display_node": display_node_id, "output": cached_output.get("output",None), "prompt_id": prompt_id }, server.client_id)
-        print("--> Node {}: Using cached output".format(unique_id))
         return (ExecutionResult.SUCCESS, None, None)
 
     input_data_all = None
     try:
         if unique_id in pending_subgraph_results:
-            print("--> Node {}: Resolving subgraph".format(unique_id))
             cached_results = pending_subgraph_results[unique_id]
             resolved_outputs = []
             for is_subgraph, result in cached_results:
@@ -267,7 +263,6 @@ def non_recursive_execute(server, dynprompt, caches, current_item, extra_data, e
             output_ui = []
             has_subgraph = False
         else:
-            print("--> Node {}: Executing".format(unique_id))
             input_data_all = get_input_data(inputs, class_def, unique_id, caches.outputs, dynprompt.original_prompt, dynprompt, extra_data)
             if server.client_id is not None:
                 server.last_node_id = display_node_id

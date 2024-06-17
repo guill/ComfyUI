@@ -231,11 +231,151 @@ def format_value(x):
     else:
         return str(x)
 
-def execute(server, dynprompt, caches, current_item, extra_data, executed, prompt_id, execution_list, pending_subgraph_results):
-    unique_id = current_item
+def resolve_pending_subgraph(unique_id, class_def, pending_subgraph_results, caches):
+    cached_results = pending_subgraph_results[unique_id]
+    resolved_outputs = []
+    for is_subgraph, result in cached_results:
+        if not is_subgraph:
+            resolved_outputs.append(result)
+        else:
+            resolved_output = []
+            for r in result:
+                if is_link(r):
+                    source_node, source_output = r[0], r[1]
+                    node_output = caches.outputs.get(source_node)[source_output]
+                    for o in node_output:
+                        resolved_output.append(o)
+
+                else:
+                    resolved_output.append(r)
+            resolved_outputs.append(tuple(resolved_output))
+    return merge_result_data(resolved_outputs, class_def)
+
+def expand_subgraph(unique_id, output_data, dynprompt, caches, execution_list, pending_subgraph_results):
+    cached_outputs = []
+    new_node_ids = []
+    new_output_ids = []
+    new_output_links = []
+    for i in range(len(output_data)):
+        new_graph, node_outputs = output_data[i]
+        if new_graph is None:
+            cached_outputs.append((False, node_outputs))
+        else:
+            # Check for conflicts
+            for node_id in new_graph.keys():
+                if dynprompt.has_node(node_id):
+                    raise DuplicateNodeError(f"Attempt to add duplicate node {node_id}. Ensure node ids are unique and deterministic or use graph_utils.GraphBuilder.")
+            for node_id, node_info in new_graph.items():
+                new_node_ids.append(node_id)
+                display_id = node_info.get("override_display_id", unique_id)
+                dynprompt.add_ephemeral_node(node_id, node_info, unique_id, display_id)
+                # Figure out if the newly created node is an output node
+                class_type = node_info["class_type"]
+                class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
+                if hasattr(class_def, 'OUTPUT_NODE') and class_def.OUTPUT_NODE == True:
+                    new_output_ids.append(node_id)
+            for i in range(len(node_outputs)):
+                if is_link(node_outputs[i]):
+                    from_node_id, from_socket = node_outputs[i][0], node_outputs[i][1]
+                    new_output_links.append((from_node_id, from_socket))
+            cached_outputs.append((True, node_outputs))
+    new_node_ids = set(new_node_ids)
+    for cache in caches.all:
+        cache.ensure_subcache_for(unique_id, new_node_ids).clean_unused()
+    for node_id in new_output_ids:
+        execution_list.add_node(node_id)
+    for link in new_output_links:
+        execution_list.add_strong_link(link[0], link[1], unique_id)
+    pending_subgraph_results[unique_id] = cached_outputs
+
+def resolve_node_output(
+    unique_id,
+    class_type,
+    caches,
+    class_def,
+    dynprompt,
+    server,
+    executed,
+    prompt_id,
+    execution_list,
+    display_node_id,
+    real_node_id,
+    pending_subgraph_results,
+    input_data_all,
+    missing_keys
+):
+    parent_node_id = dynprompt.get_parent_node_id(unique_id)
+    if server.client_id is not None:
+        server.last_node_id = display_node_id
+        server.send_sync("executing", { "node": unique_id, "display_node": display_node_id, "prompt_id": prompt_id }, server.client_id)
+
+    obj = caches.objects.get(unique_id)
+    if obj is None:
+        obj = class_def()
+        caches.objects.set(unique_id, obj)
+
+    if hasattr(obj, "check_lazy_status"):
+        required_inputs = map_node_over_list(obj, input_data_all, "check_lazy_status", allow_interrupt=True)
+        required_inputs = set(sum([r for r in required_inputs if isinstance(r,list)], []))
+        required_inputs = [x for x in required_inputs if isinstance(x,str) and (
+            x not in input_data_all or x in missing_keys
+        )]
+        if len(required_inputs) > 0:
+            for i in required_inputs:
+                execution_list.make_input_strong_link(unique_id, i)
+            return ExecutionResult.PENDING
+
+    def execution_block_cb(block):
+        if block.message is not None:
+            mes = {
+                "prompt_id": prompt_id,
+                "node_id": unique_id,
+                "node_type": class_type,
+                "executed": list(executed),
+
+                "exception_message": f"Execution Blocked: {block.message}",
+                "exception_type": "ExecutionBlocked",
+                "traceback": [],
+                "current_inputs": [],
+                "current_outputs": [],
+            }
+            server.send_sync("execution_error", mes, server.client_id)
+            return ExecutionBlocker(None)
+        else:
+            return block
+    def pre_execute_cb(call_index):
+        GraphBuilder.set_default_prefix(unique_id, call_index, 0)
+    output_data, output_ui, has_subgraph = get_output_data(obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
+    if len(output_ui) > 0:
+        caches.ui.set(unique_id, {
+            "meta": {
+                "node_id": unique_id,
+                "display_node": display_node_id,
+                "parent_node": parent_node_id,
+                "real_node_id": real_node_id,
+            },
+            "output": output_ui
+        })
+        if server.client_id is not None:
+            server.send_sync("executed", { "node": unique_id, "display_node": display_node_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
+    if has_subgraph:
+        expand_subgraph(unique_id, output_data, dynprompt, caches, execution_list, pending_subgraph_results)
+        return ExecutionResult.PENDING
+    return output_data
+
+def execute(
+    server,
+    dynprompt,
+    caches,
+    unique_id,
+    extra_data,
+    executed,
+    prompt_id,
+    execution_list,
+    pending_subgraph_results
+):
     real_node_id = dynprompt.get_real_node_id(unique_id)
     display_node_id = dynprompt.get_display_node_id(unique_id)
-    parent_node_id = dynprompt.get_parent_node_id(unique_id)
     inputs = dynprompt.get_node(unique_id)['inputs']
     class_type = dynprompt.get_node(unique_id)['class_type']
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
@@ -248,118 +388,29 @@ def execute(server, dynprompt, caches, current_item, extra_data, executed, promp
     input_data_all = None
     try:
         if unique_id in pending_subgraph_results:
-            cached_results = pending_subgraph_results[unique_id]
-            resolved_outputs = []
-            for is_subgraph, result in cached_results:
-                if not is_subgraph:
-                    resolved_outputs.append(result)
-                else:
-                    resolved_output = []
-                    for r in result:
-                        if is_link(r):
-                            source_node, source_output = r[0], r[1]
-                            node_output = caches.outputs.get(source_node)[source_output]
-                            for o in node_output:
-                                resolved_output.append(o)
-
-                        else:
-                            resolved_output.append(r)
-                    resolved_outputs.append(tuple(resolved_output))
-            output_data = merge_result_data(resolved_outputs, class_def)
-            output_ui = []
-            has_subgraph = False
+            output_data = resolve_pending_subgraph(unique_id, class_def, pending_subgraph_results, caches)
         else:
             input_data_all, missing_keys = get_input_data(inputs, class_def, unique_id, caches.outputs, dynprompt, extra_data)
-            if server.client_id is not None:
-                server.last_node_id = display_node_id
-                server.send_sync("executing", { "node": unique_id, "display_node": display_node_id, "prompt_id": prompt_id }, server.client_id)
-
-            obj = caches.objects.get(unique_id)
-            if obj is None:
-                obj = class_def()
-                caches.objects.set(unique_id, obj)
-
-            if hasattr(obj, "check_lazy_status"):
-                required_inputs = map_node_over_list(obj, input_data_all, "check_lazy_status", allow_interrupt=True)
-                required_inputs = set(sum([r for r in required_inputs if isinstance(r,list)], []))
-                required_inputs = [x for x in required_inputs if isinstance(x,str) and (
-                    x not in input_data_all or x in missing_keys
-                )]
-                if len(required_inputs) > 0:
-                    for i in required_inputs:
-                        execution_list.make_input_strong_link(unique_id, i)
-                    return (ExecutionResult.PENDING, None, None)
-
-            def execution_block_cb(block):
-                if block.message is not None:
-                    mes = {
-                        "prompt_id": prompt_id,
-                        "node_id": unique_id,
-                        "node_type": class_type,
-                        "executed": list(executed),
-
-                        "exception_message": f"Execution Blocked: {block.message}",
-                        "exception_type": "ExecutionBlocked",
-                        "traceback": [],
-                        "current_inputs": [],
-                        "current_outputs": [],
-                    }
-                    server.send_sync("execution_error", mes, server.client_id)
-                    return ExecutionBlocker(None)
-                else:
-                    return block
-            def pre_execute_cb(call_index):
-                GraphBuilder.set_default_prefix(unique_id, call_index, 0)
-            output_data, output_ui, has_subgraph = get_output_data(obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
-        if len(output_ui) > 0:
-            caches.ui.set(unique_id, {
-                "meta": {
-                    "node_id": unique_id,
-                    "display_node": display_node_id,
-                    "parent_node": parent_node_id,
-                    "real_node_id": real_node_id,
-                },
-                "output": output_ui
-            })
-            if server.client_id is not None:
-                server.send_sync("executed", { "node": unique_id, "display_node": display_node_id, "output": output_ui, "prompt_id": prompt_id }, server.client_id)
-        if has_subgraph:
-            cached_outputs = []
-            new_node_ids = []
-            new_output_ids = []
-            new_output_links = []
-            for i in range(len(output_data)):
-                new_graph, node_outputs = output_data[i]
-                if new_graph is None:
-                    cached_outputs.append((False, node_outputs))
-                else:
-                    # Check for conflicts
-                    for node_id in new_graph.keys():
-                        if dynprompt.has_node(node_id):
-                            raise DuplicateNodeError(f"Attempt to add duplicate node {node_id}. Ensure node ids are unique and deterministic or use graph_utils.GraphBuilder.")
-                    for node_id, node_info in new_graph.items():
-                        new_node_ids.append(node_id)
-                        display_id = node_info.get("override_display_id", unique_id)
-                        dynprompt.add_ephemeral_node(node_id, node_info, unique_id, display_id)
-                        # Figure out if the newly created node is an output node
-                        class_type = node_info["class_type"]
-                        class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
-                        if hasattr(class_def, 'OUTPUT_NODE') and class_def.OUTPUT_NODE == True:
-                            new_output_ids.append(node_id)
-                    for i in range(len(node_outputs)):
-                        if is_link(node_outputs[i]):
-                            from_node_id, from_socket = node_outputs[i][0], node_outputs[i][1]
-                            new_output_links.append((from_node_id, from_socket))
-                    cached_outputs.append((True, node_outputs))
-            new_node_ids = set(new_node_ids)
-            for cache in caches.all:
-                cache.ensure_subcache_for(unique_id, new_node_ids).clean_unused()
-            for node_id in new_output_ids:
-                execution_list.add_node(node_id)
-            for link in new_output_links:
-                execution_list.add_strong_link(link[0], link[1], unique_id)
-            pending_subgraph_results[unique_id] = cached_outputs
-            return (ExecutionResult.PENDING, None, None)
+            result = resolve_node_output(
+                unique_id,
+                class_type,
+                caches,
+                class_def,
+                dynprompt,
+                server,
+                executed,
+                prompt_id,
+                execution_list,
+                display_node_id,
+                real_node_id,
+                pending_subgraph_results,
+                input_data_all,
+                missing_keys
+            )
+            if isinstance(result, ExecutionResult):
+                return (result, None, None)
+            else:
+                output_data = result
         caches.outputs.set(unique_id, output_data)
     except comfy.model_management.InterruptProcessingException as iex:
         logging.info("Processing interrupted")

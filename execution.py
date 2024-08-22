@@ -18,6 +18,22 @@ from comfy_execution.graph_utils import is_link, GraphBuilder
 from comfy_execution.caching import HierarchicalCache, LRUCache, CacheKeySetInputSignature, CacheKeySetID
 from comfy.cli_args import args
 
+def resolve_dynamic_types(prompt):
+    output = {}
+    for node_id in prompt:
+        node = prompt[node_id]
+        class_type = node["class_type"]
+        class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
+        if hasattr(class_def, "resolve_dynamic_types"):
+            inputs, outputs, output_names = class_def.resolve_dynamic_types(node_id, prompt)
+            output[node_id] = {
+                "inputs": inputs,
+                "outputs": outputs,
+                "output_names": output_names,
+            }
+    return output
+
+
 class ExecutionResult(Enum):
     SUCCESS = 0
     FAILURE = 1

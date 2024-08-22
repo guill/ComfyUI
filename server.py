@@ -595,6 +595,17 @@ class PromptServer():
             queue_info['queue_pending'] = current_queue[1]
             return web.json_response(queue_info)
 
+        @routes.post("/resolve_dynamic_types")
+        async def resolve_dynamic_types(request):
+            json_data = await request.json()
+            if 'prompt' not in json_data:
+                return web.json_response({"error": "no prompt"}, status=400)
+            prompt = json_data['prompt']
+            logging.info("Resolving dynamic types", prompt)
+            resolved = execution.resolve_dynamic_types(prompt)
+            return web.json_response(resolved)
+
+
         @routes.post("/prompt")
         async def post_prompt(request):
             logging.info("got prompt")

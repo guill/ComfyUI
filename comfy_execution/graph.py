@@ -54,8 +54,40 @@ class DynamicPrompt:
     def get_original_prompt(self):
         return self.original_prompt
 
-def get_input_info(class_def, input_name):
-    valid_inputs = class_def.INPUT_TYPES()
+def node_class_info(node_class):
+    obj_class = nodes.NODE_CLASS_MAPPINGS[node_class]
+    info = {}
+    info['input'] = obj_class.INPUT_TYPES()
+    info['input_order'] = {key: list(value.keys()) for (key, value) in obj_class.INPUT_TYPES().items()}
+    info['output'] = obj_class.RETURN_TYPES
+    info['output_is_list'] = obj_class.OUTPUT_IS_LIST if hasattr(obj_class, 'OUTPUT_IS_LIST') else [False] * len(obj_class.RETURN_TYPES)
+    info['output_name'] = obj_class.RETURN_NAMES if hasattr(obj_class, 'RETURN_NAMES') else info['output']
+    info['name'] = node_class
+    info['display_name'] = nodes.NODE_DISPLAY_NAME_MAPPINGS[node_class] if node_class in nodes.NODE_DISPLAY_NAME_MAPPINGS.keys() else node_class
+    info['description'] = obj_class.DESCRIPTION if hasattr(obj_class,'DESCRIPTION') else ''
+    info['python_module'] = getattr(obj_class, "RELATIVE_PYTHON_MODULE", "nodes")
+    info['category'] = 'sd'
+    if hasattr(obj_class, 'OUTPUT_NODE') and obj_class.OUTPUT_NODE == True:
+        info['output_node'] = True
+    else:
+        info['output_node'] = False
+
+    if hasattr(obj_class, 'CATEGORY'):
+        info['category'] = obj_class.CATEGORY
+
+    if hasattr(obj_class, 'OUTPUT_TOOLTIPS'):
+        info['output_tooltips'] = obj_class.OUTPUT_TOOLTIPS
+
+    if getattr(obj_class, "DEPRECATED", False):
+        info['deprecated'] = True
+    if getattr(obj_class, "EXPERIMENTAL", False):
+        info['experimental'] = True
+
+    return info
+
+
+def get_input_info(node_info, input_name):
+    valid_inputs = node_info["input"]
     input_info = None
     input_category = None
     if "required" in valid_inputs and input_name in valid_inputs["required"]:
@@ -86,7 +118,7 @@ class TopologicalSort:
     def get_input_info(self, unique_id, input_name):
         class_type = self.dynprompt.get_node(unique_id)["class_type"]
         class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
-        return get_input_info(class_def, input_name)
+        return get_input_info(node_class_info(class_def), input_name)
 
     def make_input_strong_link(self, to_node_id, to_input):
         inputs = self.dynprompt.get_node(to_node_id)["inputs"]

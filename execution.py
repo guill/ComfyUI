@@ -7,31 +7,109 @@ import time
 import traceback
 from enum import Enum
 import inspect
-from typing import List, Literal, NamedTuple, Optional
+from typing import List, Literal, NamedTuple, Optional, Dict, Tuple
 
 import torch
 import nodes
 
 import comfy.model_management
-from comfy_execution.graph import get_input_info, ExecutionList, DynamicPrompt, ExecutionBlocker
+from comfy_execution.graph import get_input_info, ExecutionList, DynamicPrompt, ExecutionBlocker, node_class_info
 from comfy_execution.graph_utils import is_link, GraphBuilder
 from comfy_execution.caching import HierarchicalCache, LRUCache, CacheKeySetInputSignature, CacheKeySetID
 from comfy.cli_args import args
 
-def resolve_dynamic_types(prompt):
-    output = {}
-    for node_id in prompt:
-        node = prompt[node_id]
+def get_input_output_types(dynprompt, node_id, info, output_lookup) -> Tuple[Dict[str, str], Dict[str, List[str]]]:
+    node = dynprompt.get_node(node_id)
+    input_types: Dict[str, str] = {}
+    for input_name, input_data in node["inputs"].items():
+        if is_link(input_data):
+            from_node_id, from_socket = input_data
+            if from_socket < len(info[from_node_id]["output_name"]):
+                input_types[input_name] = info[from_node_id]["output"][from_socket]
+            else:
+                input_types[input_name] = "*"
+    output_types: Dict[str, List[str]] = {}
+    for index in range(len(info[node_id]["output_name"])):
+        output_name = info[node_id]["output_name"][index]
+        if (node_id, index) not in output_lookup:
+            continue
+        for (to_node_id, to_input_name) in output_lookup[(node_id, index)]:
+            if output_name not in output_types:
+                output_types[output_name] = []
+            if to_input_name in info[to_node_id]["input"]["required"]:
+                output_types[output_name].append(info[to_node_id]["input"]["required"][to_input_name][0])
+            elif to_input_name in info[to_node_id]["input"]["optional"]:
+                output_types[output_name].append(info[to_node_id]["input"]["optional"][to_input_name][0])
+    return input_types, output_types
+
+def resolve_dynamic_types(dynprompt: DynamicPrompt):
+    info = {}
+    output_lookup = {}
+    entangled = {}
+    # Pre-fill with class info
+    for node_id in dynprompt.all_node_ids():
+        node = dynprompt.get_node(node_id)
+        class_type = node["class_type"]
+        class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
+        info[node_id] = node_class_info(class_type)
+        for input_name, input_data in node["inputs"].items():
+            if is_link(input_data):
+                input_tuple = tuple(input_data)
+                if input_tuple not in output_lookup:
+                    output_lookup[input_tuple] = []
+                output_lookup[input_tuple].append((node_id, input_name))
+                _, _, extra_info = get_input_info(info[node_id], input_name)
+                if extra_info is not None and extra_info.get("entangleTypes", False):
+                    from_node_id = input_data[0]
+                    if node_id not in entangled:
+                        entangled[node_id] = []
+                    if from_node_id not in entangled:
+                        entangled[from_node_id] = []
+
+                    entangled[node_id].append((from_node_id, input_name))
+                    entangled[from_node_id].append((node_id, input_name))
+
+    # Evaluate node info
+    to_resolve = set(info.keys())
+    result = {}
+    while len(to_resolve) > 0:
+        node_id = to_resolve.pop()
+        node = dynprompt.get_node(node_id)
         class_type = node["class_type"]
         class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
         if hasattr(class_def, "resolve_dynamic_types"):
-            inputs, outputs, output_names = class_def.resolve_dynamic_types(node_id, prompt)
-            output[node_id] = {
-                "input": inputs,
-                "output": outputs,
-                "output_name": output_names,
-            }
-    return output
+            entangled_types = {}
+            for (entangled_id, entangled_name) in entangled.get(node_id, []):
+                input_types, output_types = get_input_output_types(dynprompt, entangled_id, info, output_lookup)
+                if entangled_name not in entangled_types:
+                    entangled_types[entangled_name] = []
+                entangled_types[entangled_name].append({
+                    "node_id": entangled_id,
+                    "input_types": input_types,
+                    "output_types": output_types
+                })
+
+            input_types, output_types = get_input_output_types(dynprompt, node_id, info, output_lookup)
+            dynamic_info = class_def.resolve_dynamic_types(
+                node_id=node_id,
+                input_types=input_types,
+                output_types=output_types,
+                entangled_types=entangled_types
+            )
+            old_info = info[node_id].copy()
+            info[node_id].update(dynamic_info)
+            # We changed the info, so we potentially need to resolve adjacent and entangled nodes
+            if old_info != info[node_id]:
+                result[node_id] = info[node_id]
+                for (entangled_node_id, _) in entangled.get(node_id, []):
+                    to_resolve.add(entangled_node_id)
+                for i in range(len(info[node_id]["output"])):
+                    for (output_node_id, _) in output_lookup.get((node_id, i), []):
+                        to_resolve.add(output_node_id)
+                for _, input_data in node["inputs"].items():
+                    if is_link(input_data):
+                        to_resolve.add(input_data[0])
+    return result
 
 
 class ExecutionResult(Enum):
@@ -568,7 +646,7 @@ def validate_inputs(prompt, item, validated):
     received_types = {}
 
     for x in valid_inputs:
-        type_input, input_category, extra_info = get_input_info(obj_class, x)
+        type_input, input_category, extra_info = get_input_info(node_class_info(obj_class), x)
         assert extra_info is not None
         if x not in inputs:
             if input_category == "required":

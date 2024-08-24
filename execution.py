@@ -27,9 +27,9 @@ def resolve_dynamic_types(prompt):
         if hasattr(class_def, "resolve_dynamic_types"):
             inputs, outputs, output_names = class_def.resolve_dynamic_types(node_id, prompt)
             output[node_id] = {
-                "inputs": inputs,
-                "outputs": outputs,
-                "output_names": output_names,
+                "input": inputs,
+                "output": outputs,
+                "output_name": output_names,
             }
     return output
 

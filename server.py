@@ -29,7 +29,7 @@ from app.frontend_management import FrontendManager
 from app.user_manager import UserManager
 from model_filemanager import download_model, DownloadModelStatus
 from typing import Optional
-from comfy_execution.graph import DynamicPrompt, node_class_info
+from comfy_execution.graph import DynamicPrompt, DynamicNodeDefinitionCache, node_class_info
 
 class BinaryEventTypes:
     PREVIEW_IMAGE = 1
@@ -466,8 +466,9 @@ class PromptServer():
                 return web.json_response({"error": "no prompt"}, status=400)
             prompt = json_data['prompt']
             dynprompt = DynamicPrompt(prompt)
-            resolved = execution.resolve_dynamic_types(dynprompt)
-            return web.json_response(resolved)
+            definitions = DynamicNodeDefinitionCache(dynprompt)
+            updated = definitions.resolve_dynamic_definitions(dynprompt.all_node_ids())
+            return web.json_response(updated)
 
 
         @routes.post("/prompt")

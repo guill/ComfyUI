@@ -76,6 +76,16 @@ class DynamicNodeDefinitionCache:
             self.definitions[node_id] = definition
         return self.definitions[node_id]
 
+    def get_constant_type(self, value):
+        if isinstance(value, (int, float)):
+            return "INT,FLOAT"
+        elif isinstance(value, str):
+            return "STRING"
+        elif isinstance(value, bool):
+            return "BOOL"
+        else:
+            return None
+
     def get_input_output_types(self, node_id) -> Tuple[Dict[str, str], Dict[str, List[str]]]:
         node = self.dynprompt.get_node(node_id)
         input_types: Dict[str, str] = {}
@@ -86,6 +96,10 @@ class DynamicNodeDefinitionCache:
                     input_types[input_name] = self.definitions[from_node_id]["output"][from_socket]
                 else:
                     input_types[input_name] = "*"
+            else:
+                constant_type = self.get_constant_type(input_data)
+                if constant_type is not None:
+                    input_types[input_name] = constant_type
         output_types: Dict[str, List[str]] = {}
         for index in range(len(self.definitions[node_id]["output_name"])):
             output_name = self.definitions[node_id]["output_name"][index]
@@ -103,7 +117,6 @@ class DynamicNodeDefinitionCache:
         return input_types, output_types
 
     def resolve_dynamic_definitions(self, node_id_set: Set[str]):
-        print("Resolving dynamic definitions", node_id_set)
         entangled = {}
         # Pre-fill with class info. Also, build a lookup table for output nodes
         for node_id in node_id_set:

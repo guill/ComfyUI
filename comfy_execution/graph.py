@@ -154,7 +154,19 @@ class DynamicNodeDefinitionCache:
             if hasattr(class_def, "resolve_dynamic_types"):
                 entangled_types = {}
                 for (entangled_id, entangled_name) in entangled.get(node_id, []):
-                    input_types, output_types = self.get_input_output_types(entangled_id)
+                    entangled_def = self.get_node_definition(entangled_id)
+                    if entangled_def is None:
+                        continue
+                    input_types = {}
+                    output_types = {}
+                    for input_category, input_list in entangled_def["input"].items():
+                        for input_name, input_info in input_list.items():
+                            if isinstance(input_info, tuple) or input_category != "hidden":
+                                input_types[input_name] = input_info[0]
+                    for i in range(len(entangled_def["output"])):
+                        output_name = entangled_def["output_name"][i]
+                        output_types[output_name] = entangled_def["output"][i]
+
                     if entangled_name not in entangled_types:
                         entangled_types[entangled_name] = []
                     entangled_types[entangled_name].append({

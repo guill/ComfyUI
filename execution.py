@@ -126,6 +126,8 @@ def get_input_data(inputs, node_def, unique_id, outputs=None, dynprompt=None, ex
                 input_data_all[x] = [extra_data.get('extra_pnginfo', None)]
             if h[x] == "UNIQUE_ID":
                 input_data_all[x] = [unique_id]
+            if h[x] == "NODE_DEFINITION":
+                input_data_all[x] = [node_def]
     return input_data_all, missing_keys
 
 map_node_over_list = None #Don't hook this please
@@ -173,6 +175,8 @@ def merge_result_data(results, node_def):
     # check which outputs need concatenating
     output = []
     output_is_list = node_def['output_is_list']
+    if len(output_is_list) < len(results[0]):
+        output_is_list = output_is_list + [False] * (len(results[0]) - len(output_is_list))
 
     # merge node execution results
     for i, is_list in zip(range(len(results[0])), output_is_list):
@@ -471,6 +475,7 @@ class PromptExecutor:
 
         with torch.inference_mode():
             dynamic_prompt = DynamicPrompt(prompt)
+            dynamic_prompt.node_definitions.resolve_dynamic_definitions(set(dynamic_prompt.all_node_ids()))
             is_changed_cache = IsChangedCache(dynamic_prompt, self.caches.outputs)
             for cache in self.caches.all:
                 cache.set_prompt(dynamic_prompt, prompt.keys(), is_changed_cache)

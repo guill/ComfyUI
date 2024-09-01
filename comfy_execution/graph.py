@@ -183,9 +183,9 @@ class DynamicNodeDefinitionCache:
                 )
                 old_info = self.definitions[node_id].copy()
                 self.definitions[node_id].update(dynamic_info)
+                updated[node_id] = self.definitions[node_id]
                 # We changed the info, so we potentially need to resolve adjacent and entangled nodes
                 if old_info != self.definitions[node_id]:
-                    updated[node_id] = self.definitions[node_id]
                     for (entangled_node_id, _) in entangled.get(node_id, []):
                         if entangled_node_id in node_id_set:
                             to_resolve.add(entangled_node_id)

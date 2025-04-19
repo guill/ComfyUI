@@ -274,10 +274,9 @@ def merge_result_data(results, obj):
 async def get_output_data(obj, input_data_all, execution_block_cb=None, pre_execute_cb=None):
     return_values = await _async_map_node_over_list(obj, input_data_all, obj.FUNCTION, allow_interrupt=True, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
     has_pending_task = any(isinstance(r, asyncio.Task) and not r.done() for r in return_values)
-    output, ui, has_subgraph = get_output_from_returns(return_values, obj)
     if has_pending_task:
-        has_subgraph = False # We won't worry about subgraphs until tasks complete
-        return return_values, ui, has_subgraph, has_pending_task
+        return return_values, {}, False, has_pending_task
+    output, ui, has_subgraph = get_output_from_returns(return_values, obj)
     return output, ui, has_subgraph, False
 
 def get_output_from_returns(return_values, obj):
@@ -605,7 +604,7 @@ class PromptExecutor:
                 execution_list.add_node(node_id)
 
             while not execution_list.is_empty():
-                node_id, error, ex = execution_list.stage_node_execution()
+                node_id, error, ex = await execution_list.stage_node_execution()
                 if error is not None:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
                     break

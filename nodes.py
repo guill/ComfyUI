@@ -46,6 +46,35 @@ def interrupt_processing(value=True):
 
 MAX_RESOLUTION=16384
 
+class TestSleep(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "value": (IO.ANY, {}),
+                "seconds": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 9999.0, "step": 0.01, "tooltip": "The amount of seconds to sleep."}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
+        }
+    RETURN_TYPES = (IO.ANY,)
+    FUNCTION = "sleep"
+
+    CATEGORY = "_for_testing"
+
+    async def sleep(self, value, seconds, unique_id):
+        pbar = comfy.utils.ProgressBar(seconds, node_id=unique_id)
+        import asyncio
+        start = time.time()
+        expiration = start + seconds
+        now = start
+        while now < expiration:
+            now = time.time()
+            pbar.update_absolute(now - start)
+            await asyncio.sleep(0.01)
+        return (value,)
+
 class CLIPTextEncode(ComfyNodeABC):
     @classmethod
     def INPUT_TYPES(s) -> InputTypeDict:
@@ -1941,6 +1970,7 @@ class ImagePadForOutpaint:
 
 
 NODE_CLASS_MAPPINGS = {
+    "TestSleep": TestSleep,
     "KSampler": KSampler,
     "CheckpointLoaderSimple": CheckpointLoaderSimple,
     "CLIPTextEncode": CLIPTextEncode,
@@ -2011,6 +2041,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "TestSleep": "Test Sleep",
     # Sampling
     "KSampler": "KSampler",
     "KSamplerAdvanced": "KSampler (Advanced)",

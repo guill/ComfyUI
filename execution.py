@@ -8,6 +8,7 @@ import traceback
 from enum import Enum
 import inspect
 from typing import List, Literal, NamedTuple, Optional
+import asyncio
 
 import torch
 import nodes
@@ -192,6 +193,63 @@ def _map_node_over_list(obj, input_data_all, func, allow_interrupt=False, execut
             process_inputs(input_dict, i)
     return results
 
+async def _async_map_node_over_list(obj, input_data_all, func, allow_interrupt=False, execution_block_cb=None, pre_execute_cb=None):
+    # check if node wants the lists
+    input_is_list = getattr(obj, "INPUT_IS_LIST", False)
+
+    if len(input_data_all) == 0:
+        max_len_input = 0
+    else:
+        max_len_input = max(len(x) for x in input_data_all.values())
+
+    # get a slice of inputs, repeat last input when list isn't long enough
+    def slice_dict(d, i):
+        return {k: v[i if len(v) > i else -1] for k, v in d.items()}
+
+    results = []
+    async def process_inputs(inputs, index=None, input_is_list=False):
+        if allow_interrupt:
+            nodes.before_node_execution()
+        execution_block = None
+        for k, v in inputs.items():
+            if input_is_list:
+                for e in v:
+                    if isinstance(e, ExecutionBlocker):
+                        v = e
+                        break
+            if isinstance(v, ExecutionBlocker):
+                execution_block = execution_block_cb(v) if execution_block_cb else v
+                break
+        if execution_block is None:
+            if pre_execute_cb is not None and index is not None:
+                pre_execute_cb(index)
+            f = getattr(obj, func)
+            if inspect.iscoroutinefunction(f):
+                task = asyncio.create_task(f(**inputs))
+                # Give the task a chance to execute without yielding
+                await asyncio.sleep(0)
+                if task.done():
+                    result = task.result()
+                    results.append(result)
+                else:
+                    results.append(task)
+            else:
+                result = f(**inputs)
+                results.append(result)
+        else:
+            results.append(execution_block)
+
+    if input_is_list:
+        await process_inputs(input_data_all, 0, input_is_list=input_is_list)
+    elif max_len_input == 0:
+        await process_inputs({})
+    else:
+        for i in range(max_len_input):
+            input_dict = slice_dict(input_data_all, i)
+            await process_inputs(input_dict, i)
+    return results
+
+
 def merge_result_data(results, obj):
     # check which outputs need concatenating
     output = []
@@ -213,11 +271,19 @@ def merge_result_data(results, obj):
             output.append([o[i] for o in results])
     return output
 
-def get_output_data(obj, input_data_all, execution_block_cb=None, pre_execute_cb=None):
+async def get_output_data(obj, input_data_all, execution_block_cb=None, pre_execute_cb=None):
+    return_values = await _async_map_node_over_list(obj, input_data_all, obj.FUNCTION, allow_interrupt=True, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
+    has_pending_task = any(isinstance(r, asyncio.Task) and not r.done() for r in return_values)
+    output, ui, has_subgraph = get_output_from_returns(return_values, obj)
+    if has_pending_task:
+        has_subgraph = False # We won't worry about subgraphs until tasks complete
+        return return_values, ui, has_subgraph, has_pending_task
+    return output, ui, has_subgraph, False
+
+def get_output_from_returns(return_values, obj):
     results = []
     uis = []
     subgraph_results = []
-    return_values = _map_node_over_list(obj, input_data_all, obj.FUNCTION, allow_interrupt=True, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
     has_subgraph = False
     for i in range(len(return_values)):
         r = return_values[i]
@@ -251,6 +317,10 @@ def get_output_data(obj, input_data_all, execution_block_cb=None, pre_execute_cb
     else:
         output = []
     ui = dict()
+    # Think there's an existing bug here
+    # If we're performing a subgraph expansion, we probably shouldn't be returning UI values yet.
+    # They'll get cached without the completed subgraphs. It's an edge case and I'm not aware of
+    # any nodes that use both subgraph expansion and custom UI outputs, but might be a problem in the future.
     if len(uis) > 0:
         ui = {k: [y for x in uis for y in x[k]] for k in uis[0].keys()}
     return output, ui, has_subgraph
@@ -263,7 +333,7 @@ def format_value(x):
     else:
         return str(x)
 
-def execute(server, dynprompt, caches, current_item, extra_data, executed, prompt_id, execution_list, pending_subgraph_results):
+async def execute(server, dynprompt, caches, current_item, extra_data, executed, prompt_id, execution_list, pending_subgraph_results, pending_async_nodes):
     unique_id = current_item
     real_node_id = dynprompt.get_real_node_id(unique_id)
     display_node_id = dynprompt.get_display_node_id(unique_id)
@@ -279,7 +349,11 @@ def execute(server, dynprompt, caches, current_item, extra_data, executed, promp
 
     input_data_all = None
     try:
-        if unique_id in pending_subgraph_results:
+        if unique_id in pending_async_nodes:
+            results = [r.result() if isinstance(r, asyncio.Task) else r for r in pending_async_nodes[unique_id]]
+            del pending_async_nodes[unique_id]
+            output_data, output_ui, has_subgraph = get_output_from_returns(results, class_def)
+        elif unique_id in pending_subgraph_results:
             cached_results = pending_subgraph_results[unique_id]
             resolved_outputs = []
             for is_subgraph, result in cached_results:
@@ -341,8 +415,18 @@ def execute(server, dynprompt, caches, current_item, extra_data, executed, promp
                 else:
                     return block
             def pre_execute_cb(call_index):
+                # TODO - How to handle this with async functions without contextvars (which requires Python 3.12)?
                 GraphBuilder.set_default_prefix(unique_id, call_index, 0)
-            output_data, output_ui, has_subgraph = get_output_data(obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
+            output_data, output_ui, has_subgraph, has_pending_tasks = await get_output_data(obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb)
+            if has_pending_tasks:
+                pending_async_nodes[unique_id] = output_data
+                unblock = execution_list.add_external_block(unique_id)
+                async def await_completion():
+                    tasks = [x for x in output_data if isinstance(x, asyncio.Task)]
+                    await asyncio.gather(*tasks)
+                    unblock()
+                asyncio.create_task(await_completion())
+                return (ExecutionResult.PENDING, None, None)
         if len(output_ui) > 0:
             caches.ui.set(unique_id, {
                 "meta": {
@@ -481,6 +565,11 @@ class PromptExecutor:
             self.add_message("execution_error", mes, broadcast=False)
 
     def execute(self, prompt, prompt_id, extra_data={}, execute_outputs=[]):
+        asyncio_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(asyncio_loop)
+        asyncio.run(self.execute_async(prompt, prompt_id, extra_data, execute_outputs))
+
+    async def execute_async(self, prompt, prompt_id, extra_data={}, execute_outputs=[]):
         nodes.interrupt_processing(False)
 
         if "client_id" in extra_data:
@@ -508,6 +597,7 @@ class PromptExecutor:
                           { "nodes": cached_nodes, "prompt_id": prompt_id},
                           broadcast=False)
             pending_subgraph_results = {}
+            pending_async_nodes = {} # TODO - Unify this with pending_subgraph_results
             executed = set()
             execution_list = ExecutionList(dynamic_prompt, self.caches.outputs)
             current_outputs = self.caches.outputs.all_node_ids()
@@ -520,7 +610,7 @@ class PromptExecutor:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
                     break
 
-                result, error, ex = execute(self.server, dynamic_prompt, self.caches, node_id, extra_data, executed, prompt_id, execution_list, pending_subgraph_results)
+                result, error, ex = await execute(self.server, dynamic_prompt, self.caches, node_id, extra_data, executed, prompt_id, execution_list, pending_subgraph_results, pending_async_nodes)
                 self.success = result != ExecutionResult.FAILURE
                 if result == ExecutionResult.FAILURE:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)

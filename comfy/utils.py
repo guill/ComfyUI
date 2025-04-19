@@ -992,11 +992,12 @@ def set_progress_bar_global_hook(function):
     PROGRESS_BAR_HOOK = function
 
 class ProgressBar:
-    def __init__(self, total):
+    def __init__(self, total, node_id=None):
         global PROGRESS_BAR_HOOK
         self.total = total
         self.current = 0
         self.hook = PROGRESS_BAR_HOOK
+        self.node_id = node_id
 
     def update_absolute(self, value, total=None, preview=None):
         if total is not None:
@@ -1005,7 +1006,7 @@ class ProgressBar:
             value = self.total
         self.current = value
         if self.hook is not None:
-            self.hook(self.current, self.total, preview)
+            self.hook(self.current, self.total, preview, node_id=self.node_id)
 
     def update(self, value):
         self.update_absolute(self.current + value)

@@ -5,9 +5,10 @@ import av
 import torch
 import folder_paths
 import json
+from typing import Optional, Literal
 from fractions import Fraction
-from comfy.comfy_types import FileLocator
-
+from comfy.comfy_types import IO, FileLocator, ComfyNodeABC, VideoInput, AudioInput, ImageInput, VideoFromFile, VideoFromTensors
+from comfy.cli_args import args
 
 class SaveWEBM:
     def __init__(self):
@@ -75,7 +76,174 @@ class SaveWEBM:
 
         return {"ui": {"images": results, "animated": (True,)}}  # TODO: frontend side
 
+class LoadTestVideo(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video_path": ("STRING", {"default": "", "tooltip": "The path to the video file."}),
+            }
+        }
+    RETURN_TYPES = (IO.VIDEO,)
+    FUNCTION = "load"
+
+    CATEGORY = "_for_testing"
+    DESCRIPTION = "Loads a video from disk."
+
+    def load(self, video_path):
+        return (VideoFromFile(video_path),)
+
+class SaveVideo(ComfyNodeABC):
+    def __init__(self):
+        self.output_dir = folder_paths.get_output_directory()
+        self.type: Literal["output"] = "output"
+        self.prefix_append = ""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video": (IO.VIDEO, {"tooltip": "The video to save."}),
+                "filename_prefix": ("STRING", {"default": "video/ComfyUI", "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."})
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO"
+            },
+        }
+
+    RETURN_TYPES = ()
+    FUNCTION = "save_video"
+
+    OUTPUT_NODE = True
+
+    CATEGORY = "image"
+    DESCRIPTION = "Saves the input images to your ComfyUI output directory."
+
+    def save_video(self, video: VideoInput, filename_prefix="video", prompt=None, extra_pnginfo=None):
+        filename_prefix += self.prefix_append
+        video_size = video.get_size()
+        full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(
+            filename_prefix,
+            self.output_dir,
+            video_size.width,
+            video_size.height
+        )
+        results: list[FileLocator] = list()
+        saved_metadata = None
+        if not args.disable_metadata:
+            metadata = {}
+            if extra_pnginfo is not None:
+                metadata.update(extra_pnginfo)
+            if prompt is not None:
+                metadata["prompt"] = prompt
+            if len(metadata) > 0:
+                saved_metadata = metadata
+        file = f"{filename}_{counter:05}_.mp4"
+        video.save_to(os.path.join(full_output_folder, file), metadata=saved_metadata)
+
+        results.append({
+            "filename": file,
+            "subfolder": subfolder,
+            "type": self.type
+        })
+        counter += 1
+
+        return { "ui": { "images": results, "animated": (True,) } }
+
+class GetVideoFrames(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video": (IO.VIDEO, {"tooltip": "The video to get frames from."}),
+            }
+        }
+    RETURN_TYPES = (IO.IMAGE,)
+    FUNCTION = "get_frames"
+
+    CATEGORY = "_for_testing"
+    DESCRIPTION = "Get frames from a video."
+
+    def get_frames(self, video: VideoInput):
+        return (video.get_images(),)
+
+class GetVideoAudio(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video": (IO.VIDEO, {"tooltip": "The video to get frames from."}),
+            }
+        }
+    RETURN_TYPES = (IO.AUDIO,)
+    FUNCTION = "get_audio"
+
+    CATEGORY = "_for_testing"
+    DESCRIPTION = "Get audio from a video."
+
+    def get_audio(self, video: VideoInput):
+        return (video.get_audio(),)
+
+class GetVideoFramerate(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video": (IO.VIDEO, {"tooltip": "The video to get frames from."}),
+            }
+        }
+    RETURN_TYPES = (IO.FLOAT,)
+    FUNCTION = "get_framerate"
+
+    CATEGORY = "_for_testing"
+    DESCRIPTION = "Get the framerate of a video."
+
+    def get_framerate(self, video: VideoInput):
+        return (video.get_frame_rate(),)
+
+class CreateVideo(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": (IO.IMAGE, {"tooltip": "The images to create a video from."}),
+                "fps": ("FLOAT", {"default": 30.0, "min": 1.0, "max": 120.0, "step": 1.0}),
+            },
+            "optional": {
+                "audio": (IO.AUDIO, {"tooltip": "The audio to add to the video."}),
+            }
+        }
+
+    RETURN_TYPES = (IO.VIDEO,)
+    FUNCTION = "create_video"
+
+    CATEGORY = "_for_testing"
+    DESCRIPTION = "Create a video from images."
+
+    def create_video(self, images: ImageInput, fps: float, audio: Optional[AudioInput] = None):
+        return (VideoFromTensors(
+            images=images,
+            audio=audio,
+            frame_rate=Fraction(fps),
+        ),)
+
 
 NODE_CLASS_MAPPINGS = {
     "SaveWEBM": SaveWEBM,
+    "LoadTestVideo": LoadTestVideo,
+    "SaveVideo": SaveVideo,
+    "GetVideoFrames": GetVideoFrames,
+    "GetVideoAudio": GetVideoAudio,
+    "GetVideoFramerate": GetVideoFramerate,
+    "CreateVideo": CreateVideo,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "LoadTestVideo": "Load Test Video",
+    "SaveVideo": "Save Video",
+    "GetVideoFrames": "Get Video Frames",
+    "GetVideoAudio": "Get Video Audio",
+    "GetVideoFramerate": "Get Video Framerate",
+    "CreateVideo": "Create Video",
 }

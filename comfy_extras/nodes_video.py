@@ -7,7 +7,7 @@ import folder_paths
 import json
 from typing import Optional, Literal
 from fractions import Fraction
-from comfy.comfy_types import IO, FileLocator, ComfyNodeABC, VideoInput, AudioInput, ImageInput, VideoFromFile, VideoFromComponents
+from comfy.comfy_types import IO, FileLocator, ComfyNodeABC, VideoInput, AudioInput, ImageInput, VideoFromFile, VideoFromComponents, VideoContainer, VideoCodec, VideoComponents
 from comfy.cli_args import args
 
 class SaveWEBM:
@@ -87,7 +87,7 @@ class LoadTestVideo(ComfyNodeABC):
     RETURN_TYPES = (IO.VIDEO,)
     FUNCTION = "load"
 
-    CATEGORY = "_for_testing"
+    CATEGORY = "image/video"
     DESCRIPTION = "Loads a video from disk."
 
     def load(self, video_path):
@@ -104,7 +104,9 @@ class SaveVideo(ComfyNodeABC):
         return {
             "required": {
                 "video": (IO.VIDEO, {"tooltip": "The video to save."}),
-                "filename_prefix": ("STRING", {"default": "video/ComfyUI", "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."})
+                "filename_prefix": ("STRING", {"default": "video/ComfyUI", "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."}),
+                "format": (VideoContainer.as_input(), {"default": "auto", "tooltip": "The format to save the video as."}),
+                "codec": (VideoCodec.as_input(), {"default": "auto", "tooltip": "The codec to use for the video."}),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -117,10 +119,10 @@ class SaveVideo(ComfyNodeABC):
 
     OUTPUT_NODE = True
 
-    CATEGORY = "image"
+    CATEGORY = "image/video"
     DESCRIPTION = "Saves the input images to your ComfyUI output directory."
 
-    def save_video(self, video: VideoInput, filename_prefix="video", prompt=None, extra_pnginfo=None):
+    def save_video(self, video: VideoInput, filename_prefix, format, codec, prompt=None, extra_pnginfo=None):
         filename_prefix += self.prefix_append
         components = video.get_components()
         width = components.images.shape[2]
@@ -141,8 +143,13 @@ class SaveVideo(ComfyNodeABC):
                 metadata["prompt"] = prompt
             if len(metadata) > 0:
                 saved_metadata = metadata
-        file = f"{filename}_{counter:05}_.mp4"
-        video.save_to(os.path.join(full_output_folder, file), metadata=saved_metadata)
+        file = f"{filename}_{counter:05}_.{VideoContainer.get_extension(format)}"
+        video.save_to(
+            os.path.join(full_output_folder, file),
+            format=format,
+            codec=codec,
+            metadata=saved_metadata
+        )
 
         results.append({
             "filename": file,
@@ -152,60 +159,6 @@ class SaveVideo(ComfyNodeABC):
         counter += 1
 
         return { "ui": { "images": results, "animated": (True,) } }
-
-class GetVideoFrames(ComfyNodeABC):
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "video": (IO.VIDEO, {"tooltip": "The video to get frames from."}),
-            }
-        }
-    RETURN_TYPES = (IO.IMAGE,)
-    FUNCTION = "get_frames"
-
-    CATEGORY = "_for_testing"
-    DESCRIPTION = "Get frames from a video."
-
-    def get_frames(self, video: VideoInput):
-        components = video.get_components()
-        return (components.images,)
-
-class GetVideoAudio(ComfyNodeABC):
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "video": (IO.VIDEO, {"tooltip": "The video to get frames from."}),
-            }
-        }
-    RETURN_TYPES = (IO.AUDIO,)
-    FUNCTION = "get_audio"
-
-    CATEGORY = "_for_testing"
-    DESCRIPTION = "Get audio from a video."
-
-    def get_audio(self, video: VideoInput):
-        components = video.get_components()
-        return (components.audio,)
-
-class GetVideoFramerate(ComfyNodeABC):
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "video": (IO.VIDEO, {"tooltip": "The video to get frames from."}),
-            }
-        }
-    RETURN_TYPES = (IO.FLOAT,)
-    FUNCTION = "get_framerate"
-
-    CATEGORY = "_for_testing"
-    DESCRIPTION = "Get the framerate of a video."
-
-    def get_framerate(self, video: VideoInput):
-        components = video.get_components()
-        return (float(components.frame_rate),)
 
 class CreateVideo(ComfyNodeABC):
     @classmethod
@@ -223,14 +176,16 @@ class CreateVideo(ComfyNodeABC):
     RETURN_TYPES = (IO.VIDEO,)
     FUNCTION = "create_video"
 
-    CATEGORY = "_for_testing"
+    CATEGORY = "image/video"
     DESCRIPTION = "Create a video from images."
 
     def create_video(self, images: ImageInput, fps: float, audio: Optional[AudioInput] = None):
         return (VideoFromComponents(
+            VideoComponents(
             images=images,
             audio=audio,
             frame_rate=Fraction(fps),
+            )
         ),)
 
 class GetVideoComponents(ComfyNodeABC):
@@ -242,7 +197,7 @@ class GetVideoComponents(ComfyNodeABC):
             }
         }
     RETURN_TYPES = (IO.IMAGE, IO.AUDIO, IO.FLOAT)
-    RETURN_NAMES = ("images", "audio", "frame_rate")
+    RETURN_NAMES = ("images", "audio", "fps")
     FUNCTION = "get_components"
 
     CATEGORY = "image/video"
@@ -252,46 +207,18 @@ class GetVideoComponents(ComfyNodeABC):
         components = video.get_components()
 
         return (components.images, components.audio, float(components.frame_rate))
-class GetVideoMetadata(ComfyNodeABC):
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "video": (IO.VIDEO, {"tooltip": "The video to get metadata from."}),
-            }
-        }
-    RETURN_TYPES = (IO.STRING,)
-    FUNCTION = "get_metadata"
-
-    CATEGORY = "_for_testing"
-    DESCRIPTION = "Get metadata from a video."
-
-    def get_metadata(self, video: VideoInput):
-        components = video.get_components()
-        metadata = {}
-        if components.metadata is not None:
-            metadata.update(components.metadata)
-        return (json.dumps(metadata),)
 
 NODE_CLASS_MAPPINGS = {
     "SaveWEBM": SaveWEBM,
     "LoadTestVideo": LoadTestVideo,
     "SaveVideo": SaveVideo,
-    "GetVideoFrames": GetVideoFrames,
-    "GetVideoAudio": GetVideoAudio,
-    "GetVideoFramerate": GetVideoFramerate,
     "CreateVideo": CreateVideo,
     "GetVideoComponents": GetVideoComponents,
-    "GetVideoMetadata": GetVideoMetadata,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadTestVideo": "Load Test Video",
     "SaveVideo": "Save Video",
-    "GetVideoFrames": "Get Video Frames",
-    "GetVideoAudio": "Get Video Audio",
-    "GetVideoFramerate": "Get Video Framerate",
     "CreateVideo": "Create Video",
     "GetVideoComponents": "Get Video Components",
-    "GetVideoMetadata": "Get Video Metadata",
 }

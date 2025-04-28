@@ -1,7 +1,7 @@
 import torch
 from typing import Callable, Protocol, TypedDict, Optional, List
 from .node_typing import IO, InputTypeDict, ComfyNodeABC, CheckLazyMixin, FileLocator
-from .input_types import ImageInput, AudioInput, VideoInput, VideoFromFile, VideoFromComponents
+from .input_types import ImageInput, AudioInput, VideoInput, VideoFromFile, VideoFromComponents, VideoContainer, VideoCodec, VideoComponents
 
 
 class UnetApplyFunction(Protocol):
@@ -49,4 +49,7 @@ __all__ = [
     VideoInput.__name__,
     VideoFromFile.__name__,
     VideoFromComponents.__name__,
+    VideoContainer.__name__,
+    VideoCodec.__name__,
+    VideoComponents.__name__,
 ]

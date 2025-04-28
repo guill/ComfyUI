@@ -1,16 +1,16 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-import av
 from av.container import InputContainer
-import torch
-from typing import Optional, TypedDict, NamedTuple
-import numpy as np
+from av.subtitles.stream import SubtitleStream
+from dataclasses import dataclass
 from enum import Enum
 from fractions import Fraction
-import json
+from typing import Optional, TypedDict
+import av
 import io
-from dataclasses import dataclass
-from av.subtitles.stream import SubtitleStream
+import json
+import numpy as np
+import torch
 
 ImageInput = torch.Tensor
 """

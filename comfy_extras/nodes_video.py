@@ -7,7 +7,7 @@ import folder_paths
 import json
 from typing import Optional, Literal
 from fractions import Fraction
-from comfy.comfy_types import IO, FileLocator, ComfyNodeABC, VideoInput, AudioInput, ImageInput, VideoFromFile, VideoFromTensors
+from comfy.comfy_types import IO, FileLocator, ComfyNodeABC, VideoInput, AudioInput, ImageInput, VideoFromFile, VideoFromComponents
 from comfy.cli_args import args
 
 class SaveWEBM:
@@ -122,12 +122,14 @@ class SaveVideo(ComfyNodeABC):
 
     def save_video(self, video: VideoInput, filename_prefix="video", prompt=None, extra_pnginfo=None):
         filename_prefix += self.prefix_append
-        video_size = video.get_size()
+        components = video.get_components()
+        width = components.images.shape[2]
+        height = components.images.shape[1]
         full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(
             filename_prefix,
             self.output_dir,
-            video_size.width,
-            video_size.height
+            width,
+            height
         )
         results: list[FileLocator] = list()
         saved_metadata = None
@@ -166,7 +168,8 @@ class GetVideoFrames(ComfyNodeABC):
     DESCRIPTION = "Get frames from a video."
 
     def get_frames(self, video: VideoInput):
-        return (video.get_images(),)
+        components = video.get_components()
+        return (components.images,)
 
 class GetVideoAudio(ComfyNodeABC):
     @classmethod
@@ -183,7 +186,8 @@ class GetVideoAudio(ComfyNodeABC):
     DESCRIPTION = "Get audio from a video."
 
     def get_audio(self, video: VideoInput):
-        return (video.get_audio(),)
+        components = video.get_components()
+        return (components.audio,)
 
 class GetVideoFramerate(ComfyNodeABC):
     @classmethod
@@ -200,7 +204,8 @@ class GetVideoFramerate(ComfyNodeABC):
     DESCRIPTION = "Get the framerate of a video."
 
     def get_framerate(self, video: VideoInput):
-        return (video.get_frame_rate(),)
+        components = video.get_components()
+        return (float(components.frame_rate),)
 
 class CreateVideo(ComfyNodeABC):
     @classmethod
@@ -222,12 +227,51 @@ class CreateVideo(ComfyNodeABC):
     DESCRIPTION = "Create a video from images."
 
     def create_video(self, images: ImageInput, fps: float, audio: Optional[AudioInput] = None):
-        return (VideoFromTensors(
+        return (VideoFromComponents(
             images=images,
             audio=audio,
             frame_rate=Fraction(fps),
         ),)
 
+class GetVideoComponents(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video": (IO.VIDEO, {"tooltip": "The video to extract components from."}),
+            }
+        }
+    RETURN_TYPES = (IO.IMAGE, IO.AUDIO, IO.FLOAT)
+    RETURN_NAMES = ("images", "audio", "frame_rate")
+    FUNCTION = "get_components"
+
+    CATEGORY = "image/video"
+    DESCRIPTION = "Extracts all components from a video: frames, audio, and framerate."
+
+    def get_components(self, video: VideoInput):
+        components = video.get_components()
+
+        return (components.images, components.audio, float(components.frame_rate))
+class GetVideoMetadata(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video": (IO.VIDEO, {"tooltip": "The video to get metadata from."}),
+            }
+        }
+    RETURN_TYPES = (IO.STRING,)
+    FUNCTION = "get_metadata"
+
+    CATEGORY = "_for_testing"
+    DESCRIPTION = "Get metadata from a video."
+
+    def get_metadata(self, video: VideoInput):
+        components = video.get_components()
+        metadata = {}
+        if components.metadata is not None:
+            metadata.update(components.metadata)
+        return (json.dumps(metadata),)
 
 NODE_CLASS_MAPPINGS = {
     "SaveWEBM": SaveWEBM,
@@ -237,6 +281,8 @@ NODE_CLASS_MAPPINGS = {
     "GetVideoAudio": GetVideoAudio,
     "GetVideoFramerate": GetVideoFramerate,
     "CreateVideo": CreateVideo,
+    "GetVideoComponents": GetVideoComponents,
+    "GetVideoMetadata": GetVideoMetadata,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -246,4 +292,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GetVideoAudio": "Get Video Audio",
     "GetVideoFramerate": "Get Video Framerate",
     "CreateVideo": "Create Video",
+    "GetVideoComponents": "Get Video Components",
+    "GetVideoMetadata": "Get Video Metadata",
 }

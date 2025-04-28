@@ -7,6 +7,9 @@ import numpy as np
 import shutil
 from fractions import Fraction
 import json
+import io
+from dataclasses import dataclass
+from av.subtitles.stream import SubtitleStream
 
 ImageInput = torch.Tensor
 """
@@ -29,25 +32,32 @@ class AudioInput(TypedDict):
 
     sample_rate: int
 
+@dataclass
+class VideoComponents:
+    """
+    Dataclass representing the components of a video.
+    """
+
+    images: ImageInput
+    frame_rate: Fraction
+    audio: Optional[AudioInput] = None
+    metadata: Optional[dict] = None
+
 class VideoInput(ABC):
     """
     Abstract base class for video input types.
     """
 
     @abstractmethod
-    def get_images(self, begin_frame: int = 0, max_frames: Optional[int] = None) -> ImageInput:
+    def get_components(self) -> VideoComponents:
         """
-        Abstract method to get the image tensor.
-        """
-        pass
-
-    @abstractmethod
-    def get_audio(self) -> Optional[AudioInput]:
-        """
-        Abstract method to get the audio tensor.
+        Abstract method to get the video components (images, audio, and frame rate).
+        
+        Returns:
+            VideoComponents containing images, audio, and frame rate
         """
         pass
-
+    
     @abstractmethod
     def save_to(self, path: str, metadata: Optional[dict] = None):
         """
@@ -55,87 +65,106 @@ class VideoInput(ABC):
         """
         pass
 
-    @abstractmethod
-    def get_frame_rate(self) -> Fraction:
-        """
-        Abstract method to get the frame rate of the video.
-        """
-        pass
-
-    @abstractmethod
-    def get_size(self) -> Dimensions:
-        """
-        Abstract method to get the size of the video.
-        """
-        pass
-
-# TODO(Optimize) - Could maybe cache the container instead of reloading from disk each time?
 class VideoFromFile(VideoInput):
     """
     Class representing video input from a file.
     """
 
-    def __init__(self, path: str):
-        self.path = path
+    def __init__(self, file: str | io.BytesIO):
+        """
+        Initialize the VideoFromFile object based off of either a path on disk or a BytesIO object
+        containing the file contents.
+        """
+        self.file = file
 
-    def get_images(self, begin_frame: int = 0, max_frames: Optional[int] = None) -> ImageInput:
-        with av.open(self.path, mode='r') as container:
-            container = av.open(self.path, mode='r')
+    def get_components(self) -> VideoComponents:
+        with av.open(self.file, mode='r') as container:
+            # Get video frames
             frames = []
-            # TODO(Optimize) - Could optimize with `seek` probably.
-            for i, frame in enumerate(container.decode(video=0)):
-                if i < begin_frame:
-                    continue
-                if max_frames is not None and i >= max_frames:
-                    break
+            for frame in container.decode(video=0):
                 img = frame.to_ndarray(format='rgb24')  # shape: (H, W, 3)
                 img = torch.from_numpy(img) / 255.0  # shape: (H, W, 3)
                 frames.append(img)
-            return torch.stack(frames) if len(frames) > 0 else torch.zeros(0, 3, 0, 0)
-        return torch.zeros(0, 3, 0, 0)
-
-    def get_audio(self) -> Optional[AudioInput]:
-        with av.open(self.path, mode='r') as container:
-            container = av.open(self.path, mode='r')
-            audio_stream = next(s for s in container.streams if s.type == 'audio')
-            if not isinstance(audio_stream, av.AudioStream):
-                return None
-            frames = []
-            for frame in container.decode(audio=0):
-                samples = frame.to_ndarray()  # shape: (channels, samples)
-                frames.append(samples)
-            if not frames:
-                return None
-            audio = np.concatenate(frames, axis=1)  # shape: (channels, total_samples)
-            audio_tensor = torch.from_numpy(audio).unsqueeze(0)  # shape: (1, channels, total_samples)
-            return {
-                "waveform": audio_tensor,
-                "sample_rate": int(audio_stream.sample_rate) if audio_stream.sample_rate else 1,
-            }
+            
+            images = torch.stack(frames) if len(frames) > 0 else torch.zeros(0, 3, 0, 0)
+            
+            # Get frame rate
+            video_stream = next(s for s in container.streams if s.type == 'video')
+            frame_rate = Fraction(video_stream.average_rate) if video_stream and video_stream.average_rate else Fraction(1)
+            
+            # Get audio if available
+            audio = None
+            try:
+                audio_stream = next(s for s in container.streams if s.type == 'audio')
+                if isinstance(audio_stream, av.AudioStream):
+                    audio_frames = []
+                    for frame in container.decode(audio=0):
+                        samples = frame.to_ndarray()  # shape: (channels, samples)
+                        audio_frames.append(samples)
+                    if audio_frames:
+                        audio_data = np.concatenate(audio_frames, axis=1)  # shape: (channels, total_samples)
+                        audio_tensor = torch.from_numpy(audio_data).unsqueeze(0)  # shape: (1, channels, total_samples)
+                        audio = AudioInput({
+                            "waveform": audio_tensor,
+                            "sample_rate": int(audio_stream.sample_rate) if audio_stream.sample_rate else 1,
+                        })
+            except StopIteration:
+                pass  # No audio stream
+                
+            metadata = container.metadata
+            return VideoComponents(images=images, audio=audio, frame_rate=frame_rate, metadata=metadata)
+        raise ValueError(f"No video stream found in file '{self.file}'")
 
     def save_to(self, path: str, metadata: Optional[dict] = None):
-        # Just copy the file on disk
-        shutil.copy(self.path, path)
-        if metadata is not None:
-            with av.open(path, mode='w') as container:
+        with av.open(self.file, mode='r') as container:
+            streams = container.streams
+            print(f"Saving to {path}")
+            with av.open(path, mode='w') as output_container:
+                # Copy over the original metadata
+                for key, value in container.metadata.items():
+                    if metadata is None or key not in metadata:
+                        output_container.metadata[key] = value
+
+                # Add our new metadata
+                if metadata is not None:
                     for key, value in metadata.items():
-                        container.metadata[key] = json.dumps(value)
+                        if isinstance(value, str):
+                            output_container.metadata[key] = value
+                        else:
+                            output_container.metadata[key] = json.dumps(value)
 
-    def get_frame_rate(self) -> Fraction:
-        container = av.open(self.path, mode='r')
-        video_stream = next(s for s in container.streams if s.type == 'video')
-        if not video_stream or not video_stream.average_rate:
-            return Fraction(1) # Not sure what to do here
-        return Fraction(video_stream.average_rate)
+                # Add streams to the new container
+                if len(streams.video) > 0:
+                    stream = streams.video[0]
+                    assert isinstance(stream, (av.VideoStream, av.AudioStream, SubtitleStream))
+                    out_stream = output_container.add_stream(
+                        codec_name=stream.codec.name,
+                        time_base=stream.time_base,
+                    )
+                    for attr_name in dir(stream):
+                        attr_value = getattr(stream, attr_name)
+                        print("input", attr_name, attr_value)
 
-    def get_size(self) -> Dimensions:
-        container = av.open(self.path, mode='r')
-        video_stream = next(s for s in container.streams if s.type == 'video')
-        if not isinstance(video_stream, av.VideoStream):
-            raise ValueError("No video stream found in the file.")
-        return Dimensions(width=video_stream.width, height=video_stream.height)
 
-class VideoFromTensors(VideoInput):
+                    # Write packets to the new container
+                    for packet in container.demux(stream):
+                        # Skip the "flush" packets that `demux` can produce
+                        if packet.dts is None:
+                            continue
+                        packet.stream = out_stream
+                        output_container.mux(packet)
+
+                    # Flush the stream
+                    if isinstance(out_stream, av.VideoStream):
+                        packet = out_stream.encode(None)
+                        output_container.mux(packet)
+
+                    for attr_name in dir(out_stream):
+                        attr_value = getattr(out_stream, attr_name)
+                        print("output", attr_name, attr_value)
+        print(f"Saved to {path}")
+
+class VideoFromComponents(VideoInput):
     """
     Class representing video input from tensors.
     """
@@ -145,18 +174,18 @@ class VideoFromTensors(VideoInput):
         self.audio = audio
         self.frame_rate = frame_rate
 
-    def get_images(self, begin_frame: int = 0, max_frames: Optional[int] = None) -> ImageInput:
-        if max_frames is not None:
-            return self.images[begin_frame:begin_frame + max_frames]
-        return self.images[begin_frame:]
-
-    def get_audio(self) -> Optional[AudioInput]:
-        return self.audio
+    def get_components(self) -> VideoComponents:
+        return VideoComponents(images=self.images, audio=self.audio, frame_rate=self.frame_rate)
 
     def save_to(self, path: str, metadata: Optional[dict] = None):
         if not path.endswith('.mp4'):
             raise ValueError("Output path must end with .mp4 (for now)")
-        with av.open(path, mode='w') as output:
+        with av.open(path, mode='w', options={'movflags': 'use_metadata_tags'}) as output:
+            # Add metadata before writing any streams
+            if metadata is not None:
+                for key, value in metadata.items():
+                    output.metadata[key] = json.dumps(value)
+
             # Create a video stream
             video_stream = output.add_stream('h264', rate=self.frame_rate)
             video_stream.width = self.images.shape[2]
@@ -204,15 +233,3 @@ class VideoFromTensors(VideoInput):
                 for packet in audio_stream.encode(None):
                     output.mux(packet)
 
-            # Add metadata
-            if metadata is not None:
-                for key, value in metadata.items():
-                    output.metadata[key] = json.dumps(value)
-
-    def get_frame_rate(self):
-        return self.frame_rate
-
-    def get_size(self) -> Dimensions:
-        if self.images.shape[0] == 0:
-            return Dimensions(0, 0)
-        return Dimensions(self.images.shape[2], self.images.shape[1])

@@ -118,8 +118,7 @@ class VideoFromFile(VideoInput):
     def save_to(self, path: str, metadata: Optional[dict] = None):
         with av.open(self.file, mode='r') as container:
             streams = container.streams
-            print(f"Saving to {path}")
-            with av.open(path, mode='w') as output_container:
+            with av.open(path, mode='w', options={"movflags": "use_metadata_tags"}) as output_container:
                 # Copy over the original metadata
                 for key, value in container.metadata.items():
                     if metadata is None or key not in metadata:
@@ -134,19 +133,20 @@ class VideoFromFile(VideoInput):
                             output_container.metadata[key] = json.dumps(value)
 
                 # Add streams to the new container
+                stream_map = {}
                 for stream in streams:
-                    assert isinstance(stream, (av.VideoStream, av.AudioStream, SubtitleStream))
-                    out_stream = output_container.add_stream_from_template(template = stream, opaque = True)
+                    if isinstance(stream, (av.VideoStream, av.AudioStream, SubtitleStream)):
+                        out_stream = output_container.add_stream_from_template(template=stream, opaque=True)
+                        stream_map[stream] = out_stream
 
-                    # Write packets to the new container
-                    for packet in container.demux(stream):
-                        # Skip the "flush" packets that `demux` can produce
-                        if packet.dts is None:
-                            continue
-                        packet.stream = out_stream
+                # Write packets to the new container
+                for packet in container.demux():
+                    if packet.stream in stream_map and packet.dts is not None:
+                        packet.stream = stream_map[packet.stream]
                         output_container.mux(packet)
 
-        print(f"Saved to {path}")
+                
+
 
 class VideoFromComponents(VideoInput):
     """

@@ -134,17 +134,9 @@ class VideoFromFile(VideoInput):
                             output_container.metadata[key] = json.dumps(value)
 
                 # Add streams to the new container
-                if len(streams.video) > 0:
-                    stream = streams.video[0]
+                for stream in streams:
                     assert isinstance(stream, (av.VideoStream, av.AudioStream, SubtitleStream))
-                    out_stream = output_container.add_stream(
-                        codec_name=stream.codec.name,
-                        time_base=stream.time_base,
-                    )
-                    for attr_name in dir(stream):
-                        attr_value = getattr(stream, attr_name)
-                        print("input", attr_name, attr_value)
-
+                    out_stream = output_container.add_stream_from_template(template = stream, opaque = True)
 
                     # Write packets to the new container
                     for packet in container.demux(stream):
@@ -154,14 +146,6 @@ class VideoFromFile(VideoInput):
                         packet.stream = out_stream
                         output_container.mux(packet)
 
-                    # Flush the stream
-                    if isinstance(out_stream, av.VideoStream):
-                        packet = out_stream.encode(None)
-                        output_container.mux(packet)
-
-                    for attr_name in dir(out_stream):
-                        attr_value = getattr(out_stream, attr_name)
-                        print("output", attr_name, attr_value)
         print(f"Saved to {path}")
 
 class VideoFromComponents(VideoInput):

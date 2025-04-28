@@ -76,23 +76,6 @@ class SaveWEBM:
 
         return {"ui": {"images": results, "animated": (True,)}}  # TODO: frontend side
 
-class LoadTestVideo(ComfyNodeABC):
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "video_path": ("STRING", {"default": "", "tooltip": "The path to the video file."}),
-            }
-        }
-    RETURN_TYPES = (IO.VIDEO,)
-    FUNCTION = "load"
-
-    CATEGORY = "image/video"
-    DESCRIPTION = "Loads a video from disk."
-
-    def load(self, video_path):
-        return (VideoFromFile(video_path),)
-
 class SaveVideo(ComfyNodeABC):
     def __init__(self):
         self.output_dir = folder_paths.get_output_directory()
@@ -210,14 +193,12 @@ class GetVideoComponents(ComfyNodeABC):
 
 NODE_CLASS_MAPPINGS = {
     "SaveWEBM": SaveWEBM,
-    "LoadTestVideo": LoadTestVideo,
     "SaveVideo": SaveVideo,
     "CreateVideo": CreateVideo,
     "GetVideoComponents": GetVideoComponents,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "LoadTestVideo": "Load Test Video",
     "SaveVideo": "Save Video",
     "CreateVideo": "Create Video",
     "GetVideoComponents": "Get Video Components",

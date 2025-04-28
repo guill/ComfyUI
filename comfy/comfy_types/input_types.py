@@ -257,7 +257,6 @@ class VideoFromComponents(VideoInput):
             audio_sample_rate = 1
             audio_stream: Optional[av.AudioStream] = None
             if self.components.audio:
-                # TODO(Tidy) - Do we have to create all streams first? If not, can be cleaned up
                 audio_sample_rate = int(self.components.audio['sample_rate'])
                 audio_stream = output.add_stream('aac', rate=audio_sample_rate)
                 audio_stream.sample_rate = audio_sample_rate

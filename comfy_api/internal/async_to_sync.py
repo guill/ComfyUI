@@ -1,14 +1,23 @@
-import asyncio
-import concurrent.futures
-import contextvars
 import functools
 import inspect
 import logging
 import os
 import textwrap
-import threading
 from enum import Enum
 from typing import Optional, Type, get_origin, get_args
+from asgiref.sync import async_to_sync
+
+
+def _has_async_methods(obj) -> bool:
+    """Check if an object has any async methods."""
+    if not hasattr(obj, '__dict__'):
+        return False
+    return any(
+        inspect.iscoroutinefunction(getattr(obj, method_name))
+        for method_name in dir(obj)
+        if not method_name.startswith('_') and callable(getattr(obj, method_name, None))
+    )
+
 
 class TypeTracker:
     """Tracks types discovered during stub generation for automatic import generation."""
@@ -74,109 +83,19 @@ class AsyncToSyncConverter:
     """
     Provides utilities to convert async classes to sync classes with proper type hints.
     """
-    _thread_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
-    _thread_pool_lock = threading.Lock()
-    _thread_pool_initialized = False
 
     @classmethod
-    def get_thread_pool(cls, max_workers=None) -> concurrent.futures.ThreadPoolExecutor:
-        """Get or create the shared thread pool with proper thread-safe initialization."""
-        # Fast path - check if already initialized without acquiring lock
-        if cls._thread_pool_initialized:
-            assert cls._thread_pool is not None, "Thread pool should be initialized"
-            return cls._thread_pool
-
-        # Slow path - acquire lock and create pool if needed
-        with cls._thread_pool_lock:
-            if not cls._thread_pool_initialized:
-                cls._thread_pool = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=max_workers,
-                    thread_name_prefix="async_to_sync_"
-                )
-                cls._thread_pool_initialized = True
-
-        # This should never be None at this point, but add assertion for type checker
-        assert cls._thread_pool is not None
-        return cls._thread_pool
-
-    @classmethod
-    def run_async_in_thread(cls, coro_func, *args, **kwargs):
-        """
-        Run an async function in a separate thread from the thread pool.
-        Blocks until the async function completes.
-        Properly propagates contextvars between threads and manages event loops.
-        """
-        # Capture current context - this includes all context variables
-        context = contextvars.copy_context()
-
-        # Store the result and any exception that occurs
-        result_container: dict = {'result': None, 'exception': None}
-
-        # Function that runs in the thread pool
-        def run_in_thread():
-            # Create new event loop for this thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            try:
-                # Create the coroutine within the context
-                async def run_with_context():
-                    # The coroutine function might access context variables
-                    return await coro_func(*args, **kwargs)
-
-                # Run the coroutine with the captured context
-                # This ensures all context variables are available in the async function
-                result = context.run(loop.run_until_complete, run_with_context())
-                result_container['result'] = result
-            except Exception as e:
-                # Store the exception to re-raise in the calling thread
-                result_container['exception'] = e
-            finally:
-                # Ensure event loop is properly closed to prevent warnings
-                try:
-                    # Cancel any remaining tasks
-                    pending = asyncio.all_tasks(loop)
-                    for task in pending:
-                        task.cancel()
-
-                    # Run the loop briefly to handle cancellations
-                    if pending:
-                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                except Exception:
-                    pass  # Ignore errors during cleanup
-
-                # Close the event loop
-                loop.close()
-
-                # Clear the event loop from the thread
-                asyncio.set_event_loop(None)
-
-        # Submit to thread pool and wait for result
-        thread_pool = cls.get_thread_pool()
-        future = thread_pool.submit(run_in_thread)
-        future.result()  # Wait for completion
-
-        # Re-raise any exception that occurred in the thread
-        if result_container['exception'] is not None:
-            raise result_container['exception']
-
-        return result_container['result']
-
-    @classmethod
-    def create_sync_class(cls, async_class: Type, thread_pool_size=10) -> Type:
+    def create_sync_class(cls, async_class: Type) -> Type:
         """
         Creates a new class with synchronous versions of all async methods.
 
         Args:
             async_class: The async class to convert
-            thread_pool_size: Size of thread pool to use
 
         Returns:
             A new class with sync versions of all async methods
         """
-        cls.get_thread_pool(thread_pool_size)
-        original_name = async_class.__name__
-        sync_class_name = f"{original_name}Sync"
+        sync_class_name = "ComfyAPISyncStub"
 
         # Create a proper class with docstrings and proper base classes
         sync_class_dict = {
@@ -189,26 +108,72 @@ class AsyncToSyncConverter:
         # Create __init__ method
         def __init__(self, *args, **kwargs):
             self._async_instance = async_class(*args, **kwargs)
+            
+            # Handle annotated class attributes (like execution: Execution)
+            # Get all annotations from the class hierarchy
+            all_annotations = {}
+            for base_class in reversed(inspect.getmro(async_class)):
+                if hasattr(base_class, "__annotations__"):
+                    all_annotations.update(base_class.__annotations__)
+            
+            # For each annotated attribute, check if it needs to be created or wrapped
+            for attr_name, attr_type in all_annotations.items():
+                if hasattr(self._async_instance, attr_name):
+                    # Attribute exists on the instance
+                    attr = getattr(self._async_instance, attr_name)
+                    # Check if this attribute needs a sync wrapper
+                    if hasattr(attr, '__class__'):
+                        from comfy_api.internal.singleton import ProxiedSingleton
+                        if isinstance(attr, ProxiedSingleton) or _has_async_methods(attr):
+                            # Create a sync version of this attribute
+                            try:
+                                sync_attr_class = cls.create_sync_class(attr.__class__)
+                                # Create instance of the sync wrapper with the async instance
+                                sync_attr = object.__new__(sync_attr_class) # type: ignore
+                                sync_attr._async_instance = attr
+                                setattr(self, attr_name, sync_attr)
+                            except Exception:
+                                # If we can't create a sync version, keep the original
+                                setattr(self, attr_name, attr)
+                        else:
+                            # Not async, just copy the reference
+                            setattr(self, attr_name, attr)
+                else:
+                    # Attribute doesn't exist, but is annotated - create it
+                    # This handles cases like execution: Execution
+                    if isinstance(attr_type, type):
+                        # Check if the type is defined as an inner class
+                        if hasattr(async_class, attr_type.__name__):
+                            inner_class = getattr(async_class, attr_type.__name__)
+                            from comfy_api.internal.singleton import ProxiedSingleton
+                            # Create an instance of the inner class
+                            try:
+                                # For ProxiedSingleton classes, get or create the singleton instance
+                                if issubclass(inner_class, ProxiedSingleton):
+                                    async_instance = inner_class.get_instance()
+                                else:
+                                    async_instance = inner_class()
+                                
+                                # Create sync wrapper
+                                sync_attr_class = cls.create_sync_class(inner_class)
+                                sync_attr = object.__new__(sync_attr_class) # type: ignore
+                                sync_attr._async_instance = async_instance
+                                setattr(self, attr_name, sync_attr)
+                                # Also set on the async instance for consistency
+                                setattr(self._async_instance, attr_name, async_instance)
+                            except Exception as e:
+                                logging.warning(f"Failed to create instance for {attr_name}: {e}")
 
-            # Handle nested ProxiedSingleton attributes by creating sync versions
+            # Handle other instance attributes that might not be annotated
             for name, attr in inspect.getmembers(self._async_instance):
-                if name.startswith('_'):
+                if name.startswith('_') or hasattr(self, name):
                     continue
 
                 # If attribute is an instance of a class, and that class is defined in the original class
                 # we need to check if it needs a sync wrapper
                 if isinstance(attr, object) and not isinstance(attr, (str, int, float, bool, list, dict, tuple)):
-                    # If it's a proxied singleton or has async methods, create a sync version
-                    has_async_methods = False
-                    if hasattr(attr, '__dict__'):
-                        has_async_methods = any(
-                            inspect.iscoroutinefunction(getattr(attr, method_name))
-                            for method_name in dir(attr)
-                            if not method_name.startswith('_') and callable(getattr(attr, method_name))
-                        )
-
                     from comfy_api.internal.singleton import ProxiedSingleton
-                    if isinstance(attr, ProxiedSingleton) or has_async_methods:
+                    if isinstance(attr, ProxiedSingleton) or _has_async_methods(attr):
                         # Create a sync version of this nested class
                         try:
                             sync_attr_class = cls.create_sync_class(attr.__class__)
@@ -233,9 +198,9 @@ class AsyncToSyncConverter:
                 @functools.wraps(method)
                 def sync_method(self, *args, _method_name=name, **kwargs):
                     async_method = getattr(self._async_instance, _method_name)
-                    return AsyncToSyncConverter.run_async_in_thread(
-                        async_method, *args, **kwargs
-                    )
+                    # Use asgiref's async_to_sync to handle the conversion
+                    sync_func = async_to_sync(async_method)
+                    return sync_func(*args, **kwargs)
 
                 # Add to the class dict
                 sync_class_dict[name] = sync_method
@@ -255,11 +220,8 @@ class AsyncToSyncConverter:
                 def getter(self):
                     value = getattr(self._async_instance, name)
                     if inspect.iscoroutinefunction(value):
-                        def sync_fn(*args, **kwargs):
-                            return AsyncToSyncConverter.run_async_in_thread(
-                                value, *args, **kwargs
-                            )
-                        return sync_fn
+                        # Return a sync version of the async function
+                        return async_to_sync(value)
                     return value
 
                 def setter(self, value):
@@ -271,9 +233,6 @@ class AsyncToSyncConverter:
 
         # Create the class
         sync_class = type(sync_class_name, (object,), sync_class_dict)
-
-        # Generate type stub file for IDE support
-        cls.generate_stub_file(async_class, sync_class)
 
         return sync_class
 
@@ -687,13 +646,20 @@ class AsyncToSyncConverter:
             # Check the actual attribute names from class annotations and attributes
             attribute_mappings = {}
 
-            # First check annotations for typed attributes
-            if hasattr(async_class, "__annotations__"):
-                for attr_name, attr_type in sorted(async_class.__annotations__.items()):
-                    for class_name, class_type in class_attributes:
-                        # If the class type matches the annotated type
-                        if attr_type == class_type or (hasattr(attr_type, "__name__") and attr_type.__name__ == class_name):
-                            attribute_mappings[class_name] = attr_name
+            # First check annotations for typed attributes (including from parent classes)
+            # Collect all annotations from the class hierarchy
+            all_annotations = {}
+            for base_class in reversed(inspect.getmro(async_class)):
+                if hasattr(base_class, "__annotations__"):
+                    all_annotations.update(base_class.__annotations__)
+            
+            for attr_name, attr_type in sorted(all_annotations.items()):
+                for class_name, class_type in class_attributes:
+                    # If the class type matches the annotated type
+                    if attr_type == class_type or (hasattr(attr_type, "__name__") and attr_type.__name__ == class_name):
+                        attribute_mappings[class_name] = attr_name
+
+            # Remove the extra checking - annotations should be sufficient
 
             # Add the attribute declarations with proper names
             for class_name, _ in class_attributes:
@@ -733,15 +699,14 @@ class AsyncToSyncConverter:
             logging.error(f"Error generating stub file for {sync_class.__name__}: {str(e)}")
             import traceback
             logging.error(traceback.format_exc())
-def create_sync_class(async_class: Type, thread_pool_size=10) -> Type:
+def create_sync_class(async_class: Type) -> Type:
     """
     Creates a sync version of an async class and generates a type stub (.pyi) file.
 
     Args:
         async_class: The async class to convert
-        thread_pool_size: Size of thread pool to use
 
     Returns:
         A new class with sync versions of all async methods
     """
-    return AsyncToSyncConverter.create_sync_class(async_class, thread_pool_size)
+    return AsyncToSyncConverter.create_sync_class(async_class)

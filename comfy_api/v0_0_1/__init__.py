@@ -1,0 +1,19 @@
+from comfy_api.v0_0_2 import ComfyAPIAdapter_v0_0_2
+from typing import Type, TYPE_CHECKING
+from comfy_api.internal.async_to_sync import create_sync_class
+
+
+# This version only exists to serve as a template for future version adapters.
+# There is no reason anyone should ever use it.
+class ComfyAPIAdapter_v0_0_1(ComfyAPIAdapter_v0_0_2):
+    VERSION = "0.0.1"
+    STABLE = True
+
+ComfyAPI = ComfyAPIAdapter_v0_0_1
+
+# Create a synchronous version of the API
+if TYPE_CHECKING:
+    import comfy_api.v0_0_1.ComfyAPISyncStub  # type: ignore
+
+    ComfyAPISync: Type[comfy_api.v0_0_1.ComfyAPISyncStub.ComfyAPISyncStub]  # type: ignore
+ComfyAPISync = create_sync_class(ComfyAPIAdapter_v0_0_1)

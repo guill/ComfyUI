@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union, Set, Sequence, cast,
 from comfy_api.latest import ComfyAPI_latest
 from PIL.Image import Image
 from torch import Tensor
+from types import UnionType
 class ComfyAPISyncStub:
     def __init__(self) -> None: ...
 
@@ -15,6 +16,6 @@ class ComfyAPISyncStub:
 
         Migration from previous API: comfy.utils.PROGRESS_BAR_HOOK
         """
-        def set_progress(self, node_id: str, value: float, max_value: float, preview_image: Union[tuple[str, Image, Union[int, None]], Image, Tensor, None] = None) -> None: ...
+        def set_progress(self, value: float, max_value: float, node_id: UnionType[str, None] = None, preview_image: Union[tuple[str, Image, Union[int, None]], Image, Tensor, None] = None) -> None: ...
 
     execution: ExecutionSync

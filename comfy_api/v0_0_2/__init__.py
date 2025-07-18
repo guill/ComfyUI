@@ -10,7 +10,6 @@ ComfyAPI = ComfyAPIAdapter_v0_0_2
 
 # Create a synchronous version of the API
 if TYPE_CHECKING:
-    import comfy_api.ComfyAPISyncStub.ComfyAPISyncStub  # type: ignore
-
-    ComfyAPISync: Type[comfy_api.v0_0_2.ComfyAPISyncStub.ComfyAPISyncStub]  # type: ignore
+    from comfy_api.v0_0_2.ComfyAPISyncStub import ComfyAPISyncStub # type: ignore
+    ComfyAPISync: Type[ComfyAPISyncStub]
 ComfyAPISync = create_sync_class(ComfyAPIAdapter_v0_0_2)

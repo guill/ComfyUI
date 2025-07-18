@@ -3,6 +3,7 @@ from comfy_api.internal import ComfyAPIBase
 from comfy_api.internal.singleton import ProxiedSingleton
 from comfy_api.internal.async_to_sync import create_sync_class
 from comfy_api.latest.input import ImageInput
+from comfy_execution.utils import get_executing_context
 from comfy_execution.progress import get_progress_state, PreviewImageTuple
 from PIL import Image
 from comfy.cli_args import args
@@ -16,9 +17,9 @@ class ComfyAPI_latest(ComfyAPIBase):
     class Execution(ProxiedSingleton):
         async def set_progress(
             self,
-            node_id: str,
             value: float,
             max_value: float,
+            node_id: str | None = None,
             preview_image: PreviewImageTuple | Image.Image | ImageInput | None = None,
         ) -> None:
             """
@@ -29,6 +30,12 @@ class ComfyAPI_latest(ComfyAPIBase):
 
             Migration from previous API: comfy.utils.PROGRESS_BAR_HOOK
             """
+            executing_context = get_executing_context()
+            if node_id is None and executing_context is not None:
+                node_id = executing_context.node_id
+            if node_id is None:
+                raise ValueError("node_id must be provided if not in executing context")
+
             # Convert preview_image to PreviewImageTuple if needed
             if preview_image is not None:
                 # First convert to PIL Image if needed

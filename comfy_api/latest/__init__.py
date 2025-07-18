@@ -71,6 +71,6 @@ ComfyAPI = ComfyAPI_latest
 if TYPE_CHECKING:
     import comfy_api.latest.ComfyAPISyncStub  # type: ignore
 
-    ComfyAPISync: Type[comfy_api.latest.ComfyAPISyncStub.ComfyAPISyncStub]  # type: ignore
+    ComfyAPISync: Type[comfy_api.latest.ComfyAPISyncStub.ComfyAPISyncStub]
 ComfyAPISync = create_sync_class(ComfyAPI_latest)
 

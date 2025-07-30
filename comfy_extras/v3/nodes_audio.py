@@ -10,7 +10,8 @@ import torchaudio
 import comfy.model_management
 import folder_paths
 import node_helpers
-from comfy_api.latest import io, ui
+from comfy_api.latest import io, ComfyExtension, ui
+from typing_extensions import override
 
 
 class EmptyLatentAudio(io.ComfyNode):
@@ -288,3 +289,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     VAEDecodeAudio,
     VAEEncodeAudio,
 ]
+
+
+class AudioExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> AudioExtension:
+    return AudioExtension()

@@ -9,7 +9,8 @@ from torch import einsum
 
 import comfy.samplers
 from comfy.ldm.modules.attention import optimized_attention
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 # from comfy/ldm/modules/attention.py
@@ -189,3 +190,12 @@ class SelfAttentionGuidance(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     SelfAttentionGuidance,
 ]
+
+
+class SagExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> SagExtension:
+    return SagExtension()

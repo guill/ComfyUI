@@ -3,7 +3,8 @@ from __future__ import annotations
 from kornia.filters import canny
 
 import comfy.model_management
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class Canny(io.ComfyNode):
@@ -30,3 +31,11 @@ class Canny(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     Canny,
 ]
+
+class CannyExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> CannyExtension:
+    return CannyExtension()

@@ -11,7 +11,8 @@ import latent_preview
 import node_helpers
 from comfy.k_diffusion import sa_solver
 from comfy.k_diffusion import sampling as k_diffusion_sampling
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class BasicScheduler(io.ComfyNode):
@@ -1033,3 +1034,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     SplitSigmasDenoise,
     VPScheduler,
 ]
+
+
+class CustomSamplerExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> CustomSamplerExtension:
+    return CustomSamplerExtension()

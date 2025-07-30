@@ -7,7 +7,8 @@ import torch
 import comfy.utils
 import node_helpers
 import nodes
-from comfy_api.latest import io, ui
+from comfy_api.latest import io, ComfyExtension, ui
+from typing_extensions import override
 
 
 def composite(destination, source, x, y, mask=None, multiplier=8, resize_source=False):
@@ -435,3 +436,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     SolidMask,
     ThresholdMask,
 ]
+
+
+class MaskExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> MaskExtension:
+    return MaskExtension()

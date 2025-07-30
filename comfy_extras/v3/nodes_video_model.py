@@ -8,7 +8,8 @@ import comfy_extras.nodes_model_merging
 import folder_paths
 import node_helpers
 import nodes
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class ImageOnlyCheckpointLoader(io.ComfyNode):
@@ -230,3 +231,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     VideoLinearCFGGuidance,
     VideoTriangleCFGGuidance,
 ]
+
+
+class VideoModelExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> VideoModelExtension:
+    return VideoModelExtension()

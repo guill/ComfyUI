@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 from comfy_api.torch_helpers import set_torch_compile_wrapper
 
 
@@ -30,3 +31,12 @@ class TorchCompileModel(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     TorchCompileModel,
 ]
+
+
+class TorchCompileExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> TorchCompileExtension:
+    return TorchCompileExtension()

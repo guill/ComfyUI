@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class InstructPixToPixConditioning(io.ComfyNode):
@@ -54,3 +55,12 @@ class InstructPixToPixConditioning(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     InstructPixToPixConditioning,
 ]
+
+
+class Ip2pExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> Ip2pExtension:
+    return Ip2pExtension()

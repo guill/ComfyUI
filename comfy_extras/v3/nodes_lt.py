@@ -16,7 +16,8 @@ from comfy.ldm.lightricks.symmetric_patchifier import (
     SymmetricPatchifier,
     latent_to_pixel_coords,
 )
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 def conditioning_get_any_value(conditioning, key, default=None):
@@ -526,3 +527,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     LTXVScheduler,
     ModelSamplingLTXV,
 ]
+
+
+class LtExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> LtExtension:
+    return LtExtension()

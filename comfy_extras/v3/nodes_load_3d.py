@@ -6,7 +6,8 @@ from pathlib import Path
 import folder_paths
 import nodes
 from comfy_api.input_impl import VideoFromFile
-from comfy_api.latest import io, ui
+from comfy_api.latest import io, ComfyExtension, ui
+from typing_extensions import override
 
 
 def normalize_path(path):
@@ -178,3 +179,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     Preview3D,
     Preview3DAnimation,
 ]
+
+
+class Load3dExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> Load3dExtension:
+    return Load3dExtension()

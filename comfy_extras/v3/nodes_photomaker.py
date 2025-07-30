@@ -9,7 +9,8 @@ import comfy.model_management
 import comfy.ops
 import comfy.utils
 import folder_paths
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 # code for model from:
 # https://github.com/TencentARC/PhotoMaker/blob/main/photomaker/model.py under Apache License Version 2.0
@@ -203,3 +204,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     PhotoMakerEncode,
     PhotoMakerLoader,
 ]
+
+
+class PhotomakerExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> PhotomakerExtension:
+    return PhotomakerExtension()

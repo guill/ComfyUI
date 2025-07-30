@@ -3,7 +3,8 @@ from __future__ import annotations
 import comfy.model_management
 import comfy.sd
 import folder_paths
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class QuadrupleCLIPLoader(io.ComfyNode):
@@ -69,3 +70,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     CLIPTextEncodeHiDream,
     QuadrupleCLIPLoader,
 ]
+
+
+class HidreamExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> HidreamExtension:
+    return HidreamExtension()

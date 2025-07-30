@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from comfy_api.latest import io, ui
+from comfy_api.latest import io, ComfyExtension, ui
+from typing_extensions import override
 
 
 class PreviewAny(io.ComfyNode):
@@ -45,3 +46,12 @@ class PreviewAny(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     PreviewAny,
 ]
+
+
+class PreviewAnyExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> PreviewAnyExtension:
+    return PreviewAnyExtension()

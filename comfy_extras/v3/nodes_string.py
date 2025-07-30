@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class StringConcatenate(io.ComfyNode):
@@ -378,3 +379,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     StringSubstring,
     StringTrim,
 ]
+
+
+class StringExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> StringExtension:
+    return StringExtension()

@@ -18,7 +18,8 @@ import comfy_extras.nodes_custom_sampler
 import folder_paths
 import node_helpers
 from comfy.weight_adapter import adapter_maps, adapters
-from comfy_api.latest import io, ui
+from comfy_api.latest import io, ui, ComfyExtension
+from typing_extensions import override
 
 
 def make_batch_extra_option_dict(d, indicies, full_size=None):
@@ -664,3 +665,11 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     SaveLoRA,
     TrainLoraNode,
 ]
+
+class TrainExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> TrainExtension:
+    return TrainExtension()

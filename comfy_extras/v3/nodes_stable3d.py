@@ -4,7 +4,8 @@ import torch
 
 import comfy.utils
 import nodes
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 def camera_embeddings(elevation, azimuth):
@@ -163,3 +164,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     StableZero123_Conditioning_Batched,
     SV3D_Conditioning,
 ]
+
+
+class Stable3dExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> Stable3dExtension:
+    return Stable3dExtension()

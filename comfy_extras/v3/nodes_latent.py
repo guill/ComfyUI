@@ -4,7 +4,8 @@ import torch
 
 import comfy.utils
 import comfy_extras.nodes_post_processing
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 def reshape_latent_to(target_shape, latent, repeat_batch=True):
@@ -338,3 +339,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     LatentOperationTonemapReinhard,
     LatentSubtract,
 ]
+
+
+class LatentExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> LatentExtension:
+    return LatentExtension()

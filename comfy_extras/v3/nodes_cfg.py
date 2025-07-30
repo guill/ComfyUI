@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 # https://github.com/WeichenFan/CFG-Zero-star
@@ -87,3 +88,11 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     CFGNorm,
     CFGZeroStar,
 ]
+
+class CfgExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> CfgExtension:
+    return CfgExtension()

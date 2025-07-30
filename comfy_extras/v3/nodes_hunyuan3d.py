@@ -13,7 +13,8 @@ from comfy.cli_args import args
 from comfy.ldm.modules.diffusionmodules.mmdit import (
     get_1d_sincos_pos_embed_from_grid_torch,
 )
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class VOXEL:
@@ -670,3 +671,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     VoxelToMesh,
     VoxelToMeshBasic,
 ]
+
+
+class Hunyuan3dExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> Hunyuan3dExtension:
+    return Hunyuan3dExtension()

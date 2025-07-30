@@ -9,7 +9,8 @@ import comfy.sampler_helpers
 import comfy.samplers
 import comfy.utils
 import node_helpers
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 def perp_neg(x, noise_pred_pos, noise_pred_neg, noise_pred_nocond, neg_scale, cond_scale):
@@ -112,3 +113,12 @@ class PerpNegGuider(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     PerpNegGuider,
 ]
+
+
+class PerpnegExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> PerpnegExtension:
+    return PerpnegExtension()

@@ -5,7 +5,8 @@ from __future__ import annotations
 import torch
 import torch.fft as fft
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 def Fourier_filter(x, scale_low=1.0, scale_high=1.5, freq_cutoff=20):
@@ -108,3 +109,12 @@ class FreSca(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     FreSca,
 ]
+
+
+class FrescaExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> FrescaExtension:
+    return FrescaExtension()

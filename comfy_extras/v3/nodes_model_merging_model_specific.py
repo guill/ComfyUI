@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 from comfy_extras.v3.nodes_model_merging import ModelMergeBlocks
 
 
@@ -397,3 +398,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     ModelMergeSDXL,
     ModelMergeWAN2_1,
 ]
+
+
+class ModelMergingModelSpecificExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> ModelMergingModelSpecificExtension:
+    return ModelMergingModelSpecificExtension()

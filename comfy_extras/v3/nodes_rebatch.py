@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class ImageRebatch(io.ComfyNode):
@@ -146,3 +147,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     ImageRebatch,
     LatentRebatch,
 ]
+
+
+class RebatchExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> RebatchExtension:
+    return RebatchExtension()

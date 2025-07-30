@@ -6,7 +6,8 @@ import comfy.model_management
 import comfy.sd
 import folder_paths
 import nodes
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 from comfy_extras.v3.nodes_slg import SkipLayerGuidanceDiT
 
 

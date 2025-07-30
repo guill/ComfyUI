@@ -3,7 +3,8 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class Mahiro(io.ComfyNode):
@@ -49,3 +50,11 @@ class Mahiro(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     Mahiro,
 ]
+
+class MahiroExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> MahiroExtension:
+    return MahiroExtension()

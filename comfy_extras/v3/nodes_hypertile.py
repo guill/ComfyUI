@@ -7,7 +7,8 @@ import math
 from einops import rearrange
 from torch import randint
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 def random_divisor(value: int, min_value: int, /, max_options: int = 1) -> int:
@@ -93,3 +94,12 @@ class HyperTile(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     HyperTile,
 ]
+
+
+class HypertileExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> HypertileExtension:
+    return HypertileExtension()

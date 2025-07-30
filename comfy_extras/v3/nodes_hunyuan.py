@@ -5,7 +5,8 @@ import torch
 import comfy.model_management
 import node_helpers
 import nodes
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class CLIPTextEncodeHunyuanDiT(io.ComfyNode):
@@ -167,3 +168,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     HunyuanImageToVideo,
     TextEncodeHunyuanVideo_ImageToVideo,
 ]
+
+
+class HunyuanExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> HunyuanExtension:
+    return HunyuanExtension()

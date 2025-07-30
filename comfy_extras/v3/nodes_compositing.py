@@ -5,7 +5,8 @@ from enum import Enum
 import torch
 
 import comfy.utils
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 def resize_mask(mask, shape):
@@ -224,3 +225,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     PorterDuffImageComposite,
     SplitImageWithAlpha,
 ]
+
+
+class CompositingExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> CompositingExtension:
+    return CompositingExtension()

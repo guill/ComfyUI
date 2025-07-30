@@ -6,7 +6,8 @@ import comfy.model_patcher
 import comfy.samplers
 import comfy.utils
 from comfy.k_diffusion.sampling import to_d
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 @torch.no_grad()
@@ -126,3 +127,11 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     SamplerEulerCFGpp,
     SamplerLCMUpscale,
 ]
+
+class AdvancedSamplersExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> AdvancedSamplersExtension:
+    return AdvancedSamplersExtension()

@@ -8,7 +8,8 @@ from spandrel import ImageModelDescriptor, ModelLoader
 import comfy.utils
 import folder_paths
 from comfy import model_management
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 try:
     from spandrel import MAIN_REGISTRY
@@ -104,3 +105,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     ImageUpscaleWithModel,
     UpscaleModelLoader,
 ]
+
+
+class UpscaleModelExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> UpscaleModelExtension:
+    return UpscaleModelExtension()

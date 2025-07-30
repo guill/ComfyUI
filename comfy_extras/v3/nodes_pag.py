@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import comfy.model_patcher
 import comfy.samplers
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 #Modified/simplified version of the node from: https://github.com/pamparamm/sd-perturbed-attention
 #If you want the one with more options see the above repo.
@@ -60,3 +61,12 @@ class PerturbedAttentionGuidance(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     PerturbedAttentionGuidance,
 ]
+
+
+class PagExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> PagExtension:
+    return PagExtension()

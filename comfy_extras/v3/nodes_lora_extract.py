@@ -9,7 +9,8 @@ import torch
 import comfy.model_management
 import comfy.utils
 import folder_paths
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 CLAMP_QUANTILE = 0.99
 
@@ -136,3 +137,12 @@ class LoraSave(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     LoraSave,
 ]
+
+
+class LoraExtractExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> LoraExtractExtension:
+    return LoraExtractExtension()

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 def score_tangential_damping(cond_score: torch.Tensor, uncond_score: torch.Tensor) -> torch.Tensor:
@@ -68,3 +69,12 @@ class TCFG(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     TCFG,
 ]
+
+
+class TcfgExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> TcfgExtension:
+    return TcfgExtension()

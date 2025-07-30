@@ -7,7 +7,8 @@ import comfy.model_sampling
 import comfy.sd
 import node_helpers
 import nodes
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class LCM(comfy.model_sampling.EPS):
@@ -385,3 +386,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     ModelSamplingStableCascade,
     RescaleCFG,
 ]
+
+
+class ModelAdvancedExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> ModelAdvancedExtension:
+    return ModelAdvancedExtension()

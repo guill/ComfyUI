@@ -12,7 +12,8 @@ import comfy.sd
 import comfy.utils
 import folder_paths
 from comfy.cli_args import args
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 def save_checkpoint(model, clip=None, vae=None, clip_vision=None, filename_prefix=None, output_dir=None, prompt=None, extra_pnginfo=None):
@@ -420,3 +421,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     ModelSubtract,
     VAESave,
 ]
+
+
+class ModelMergingExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> ModelMergingExtension:
+    return ModelMergingExtension()

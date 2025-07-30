@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import node_helpers
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class ReferenceLatent(io.ComfyNode):
@@ -32,3 +33,12 @@ class ReferenceLatent(io.ComfyNode):
 NODES_LIST: list[type[io.ComfyNode]] = [
     ReferenceLatent,
 ]
+
+
+class EditModelExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> EditModelExtension:
+    return EditModelExtension()

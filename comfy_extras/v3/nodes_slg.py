@@ -4,7 +4,8 @@ import re
 
 import comfy.model_patcher
 import comfy.samplers
-from comfy_api.latest import io
+from comfy_api.latest import io, ComfyExtension
+from typing_extensions import override
 
 
 class SkipLayerGuidanceDiT(io.ComfyNode):
@@ -171,3 +172,11 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     SkipLayerGuidanceDiT,
     SkipLayerGuidanceDiTSimple,
 ]
+
+class SlgExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> SlgExtension:
+    return SlgExtension()

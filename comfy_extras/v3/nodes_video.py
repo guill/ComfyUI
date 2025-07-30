@@ -11,7 +11,8 @@ import folder_paths
 from comfy.cli_args import args
 from comfy_api.input import AudioInput, ImageInput, VideoInput
 from comfy_api.input_impl import VideoFromComponents, VideoFromFile
-from comfy_api.latest import io, ui
+from comfy_api.latest import io, ComfyExtension, ui
+from typing_extensions import override
 from comfy_api.util import VideoCodec, VideoComponents, VideoContainer
 
 
@@ -210,3 +211,12 @@ NODES_LIST: list[type[io.ComfyNode]] = [
     SaveVideo,
     SaveWEBM,
 ]
+
+
+class VideoExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return NODES_LIST
+
+async def comfy_entrypoint() -> VideoExtension:
+    return VideoExtension()
